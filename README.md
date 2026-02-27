@@ -5,7 +5,7 @@ Project Musicbox (RPi storybox): NFC + buttons + rotary + e-ink + audio.
 ## Dev quickstart
 
 cd ~/musicbox
-source ~/primer-env/bin/activate
+source ~/musicbox-env/bin/activate
 
 ## tmux
 
