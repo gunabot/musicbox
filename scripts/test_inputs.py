@@ -66,8 +66,20 @@ def main():
     led_chase(ss)
 
     last_btn = read_buttons(ss)
-    last_clk = GPIO.input(ROT_CLK)
     last_sw = GPIO.input(ROT_SW)
+
+    # Robust rotary decode using full quadrature state transitions
+    # state: 2-bit value from CLK/DT
+    def rot_state():
+        return (GPIO.input(ROT_CLK) << 1) | GPIO.input(ROT_DT)
+
+    trans = {
+        (0, 1): +1, (1, 3): +1, (3, 2): +1, (2, 0): +1,  # CW
+        (0, 2): -1, (2, 3): -1, (3, 1): -1, (1, 0): -1,  # CCW
+    }
+
+    last_state = rot_state()
+    accum = 0
 
     print(f"[{ts()}] Ready")
 
@@ -76,25 +88,30 @@ def main():
             btn = read_buttons(ss)
             for i, (old, new) in enumerate(zip(last_btn, btn), start=1):
                 if old != new:
-                    state = "PRESSED" if new else "RELEASED"
-                    # new=1 means pressed from mapping above
                     state = "PRESSED" if new == 1 else "RELEASED"
                     print(f"[{ts()}] BUTTON{i} {state}")
             last_btn = btn
 
-            clk = GPIO.input(ROT_CLK)
-            if clk != last_clk and clk == 1:
-                dt = GPIO.input(ROT_DT)
-                direction = "CW" if dt != clk else "CCW"
-                print(f"[{ts()}] ROTARY {direction}")
-            last_clk = clk
+            state = rot_state()
+            if state != last_state:
+                step = trans.get((last_state, state), 0)
+                accum += step
+                last_state = state
+
+                # One detent is usually 4 transitions on KY-040
+                if accum >= 4:
+                    print(f"[{ts()}] ROTARY CCW")
+                    accum = 0
+                elif accum <= -4:
+                    print(f"[{ts()}] ROTARY CW")
+                    accum = 0
 
             sw = GPIO.input(ROT_SW)
             if sw != last_sw:
                 print(f"[{ts()}] ROTARY_SW {'PRESSED' if sw == 0 else 'RELEASED'}")
             last_sw = sw
 
-            time.sleep(0.01)
+            time.sleep(0.002)
     except KeyboardInterrupt:
         pass
     finally:
