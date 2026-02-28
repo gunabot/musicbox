@@ -5,6 +5,8 @@ import shutil
 import threading
 import time
 import subprocess
+import socket
+import json as jsonlib
 from pathlib import Path
 from collections import deque
 from datetime import datetime
@@ -20,6 +22,7 @@ MEDIA_DIR = Path('/home/musicbox/media')
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 MAPPINGS_PATH = Path('/home/musicbox/musicbox/config/card_mappings.json')
 MAPPINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+MPV_SOCKET = '/tmp/musicbox-mpv.sock'
 
 BUTTON_PINS = [18, 19, 20, 2]
 ROT_CLK = 5
@@ -107,7 +110,19 @@ def monitor_inputs():
         btn = read_buttons()
         for i, (old, new) in enumerate(zip(last_btn, btn), start=1):
             if old != new:
-                add_event(f"BUTTON{i} {'PRESSED' if new == 1 else 'RELEASED'}")
+                pressed = (new == 1)
+                add_event(f"BUTTON{i} {'PRESSED' if pressed else 'RELEASED'}")
+                if pressed:
+                    # Physical order requested: green red blue blue
+                    # BUTTON1=play/pause, BUTTON2=stop, BUTTON3=prev, BUTTON4=next
+                    if i == 1:
+                        player_play_pause()
+                    elif i == 2:
+                        stop_player(); add_event('STOP')
+                    elif i == 3:
+                        player_prev()
+                    elif i == 4:
+                        player_next()
         last_btn = btn
 
         s = rot_state()
@@ -221,6 +236,44 @@ def media_entries():
     return entries
 
 
+def mpv_cmd(cmd):
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect(MPV_SOCKET)
+        payload = jsonlib.dumps({'command': cmd}) + '\n'
+        s.sendall(payload.encode())
+        data = s.recv(4096)
+        s.close()
+        return data.decode(errors='ignore')
+    except Exception:
+        return None
+
+
+def player_play_pause():
+    r = mpv_cmd(['cycle', 'pause'])
+    if r is not None:
+        add_event('PLAY_PAUSE')
+        return True
+    return False
+
+
+def player_next():
+    r = mpv_cmd(['playlist-next', 'force'])
+    if r is not None:
+        add_event('NEXT')
+        return True
+    return False
+
+
+def player_prev():
+    r = mpv_cmd(['playlist-prev', 'force'])
+    if r is not None:
+        add_event('PREV')
+        return True
+    return False
+
+
 def stop_player():
     global player_proc
     if player_proc and player_proc.poll() is None:
@@ -230,6 +283,11 @@ def stop_player():
         except Exception:
             player_proc.kill()
     player_proc = None
+    try:
+        if os.path.exists(MPV_SOCKET):
+            os.unlink(MPV_SOCKET)
+    except Exception:
+        pass
     with lock:
         state['player'] = {'status': 'stopped', 'file': None}
 
@@ -251,15 +309,21 @@ def play_file(relpath):
 
     stop_player()
 
+    if os.path.exists(MPV_SOCKET):
+        try:
+            os.unlink(MPV_SOCKET)
+        except Exception:
+            pass
+
     if target.is_dir():
         files = _audio_files_in_dir(target)
         if not files:
             raise FileNotFoundError('no audio files in folder')
         playlist = Path('/tmp/musicbox-playlist.m3u')
         playlist.write_text('\n'.join(str(p) for p in files) + '\n')
-        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--audio-device=alsa/plughw:1,0', f'--playlist={playlist}'])
+        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--audio-device=alsa/plughw:1,0', f'--input-ipc-server={MPV_SOCKET}', f'--playlist={playlist}'])
     else:
-        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--audio-device=alsa/plughw:1,0', str(target)])
+        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--audio-device=alsa/plughw:1,0', f'--input-ipc-server={MPV_SOCKET}', str(target)])
 
     with lock:
         state['player'] = {'status': 'playing', 'file': str(target.relative_to(MEDIA_DIR))}
@@ -312,6 +376,22 @@ def api_stop():
     stop_player()
     add_event('STOP')
     return jsonify({'ok': True})
+
+
+@app.post('/api/player/action')
+def api_player_action():
+    data = request.get_json(force=True, silent=True) or {}
+    action = (data.get('action') or '').strip().lower()
+    ok = False
+    if action == 'playpause':
+        ok = player_play_pause()
+    elif action == 'next':
+        ok = player_next()
+    elif action == 'prev':
+        ok = player_prev()
+    elif action == 'stop':
+        stop_player(); add_event('STOP'); ok = True
+    return jsonify({'ok': ok, 'action': action})
 
 
 @app.post('/api/mkdir')
@@ -438,6 +518,12 @@ small{color:#9ca3af}
   <div class='card'>ROT <span id=rot></span></div><div class='card'>SW <span id=sw></span></div><div class='card'>CARD <span id=card>-</span></div>
   <div class='card'>PLAYER <span id=player>stopped</span></div>
 </div>
+<div class='row' style='margin-top:8px'>
+  <button onclick="playerAction('playpause')">play/pause</button>
+  <button onclick="playerAction('stop')">stop</button>
+  <button onclick="playerAction('prev')">prev</button>
+  <button onclick="playerAction('next')">next</button>
+</div>
 
 <h3>File manager</h3>
 <div class='row'>
@@ -511,6 +597,7 @@ async function reloadFiles(){
 
 async function play(f){ await api('/api/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:f})}); }
 async function stopPlay(){ await api('/api/stop',{method:'POST'}); }
+async function playerAction(action){ await api('/api/player/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})}); }
 async function delPath(p){ if(!confirm('Delete '+p+' ?')) return; await api('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})}); await reloadFiles(); }
 async function mkDir(){ const p=document.getElementById('targetDir').value.trim(); if(!p) return; await api('/api/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})}); await reloadFiles(); }
 
