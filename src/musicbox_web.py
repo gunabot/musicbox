@@ -135,12 +135,14 @@ def monitor_inputs():
                     state['rotary_last'] = 'CCW'
                     state['rotary_pos'] -= 1
                 add_event('ROTARY CCW')
+                player_volume(-3)
                 accum = 0
             elif accum <= -4:
                 with lock:
                     state['rotary_last'] = 'CW'
                     state['rotary_pos'] += 1
                 add_event('ROTARY CW')
+                player_volume(+3)
                 accum = 0
 
         sw = GPIO.input(ROT_SW)
@@ -274,6 +276,15 @@ def player_prev():
     return False
 
 
+def player_volume(delta: int):
+    # Positive delta -> louder, negative -> quieter
+    r = mpv_cmd(['add', 'volume', int(delta)])
+    if r is not None:
+        add_event(f'VOLUME {delta:+d}')
+        return True
+    return False
+
+
 def stop_player():
     global player_proc
     if player_proc and player_proc.poll() is None:
@@ -391,6 +402,10 @@ def api_player_action():
         ok = player_prev()
     elif action == 'stop':
         stop_player(); add_event('STOP'); ok = True
+    elif action == 'volup':
+        ok = player_volume(+5)
+    elif action == 'voldown':
+        ok = player_volume(-5)
     return jsonify({'ok': ok, 'action': action})
 
 
@@ -523,6 +538,8 @@ small{color:#9ca3af}
   <button onclick="playerAction('stop')">stop</button>
   <button onclick="playerAction('prev')">prev</button>
   <button onclick="playerAction('next')">next</button>
+  <button onclick="playerAction('voldown')">vol -</button>
+  <button onclick="playerAction('volup')">vol +</button>
 </div>
 
 <h3>File manager</h3>
