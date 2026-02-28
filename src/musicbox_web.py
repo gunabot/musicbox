@@ -21,6 +21,7 @@ from evdev import InputDevice, ecodes, list_devices
 MEDIA_DIR = Path('/home/musicbox/media')
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 MAPPINGS_PATH = Path('/home/musicbox/musicbox/config/card_mappings.json')
+SETTINGS_PATH = Path('/home/musicbox/musicbox/config/settings.json')
 MAPPINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
 MPV_SOCKET = '/tmp/musicbox-mpv.sock'
 
@@ -38,7 +39,7 @@ state = {
     'events': deque(maxlen=200),
     'last_card': None,
     'player': {'status': 'stopped', 'file': None},
-    'settings': {'rotary_led_step_ms': 25},
+    'settings': load_settings() if 'load_settings' in globals() else {'rotary_led_step_ms': 25},
 }
 lock = threading.Lock()
 player_proc = None
@@ -66,6 +67,22 @@ def load_mappings():
 
 def save_mappings(m):
     MAPPINGS_PATH.write_text(json.dumps(m, indent=2, sort_keys=True))
+
+
+def load_settings():
+    defaults = {'rotary_led_step_ms': 25}
+    if not SETTINGS_PATH.exists():
+        return defaults
+    try:
+        data = json.loads(SETTINGS_PATH.read_text())
+        defaults.update({k: int(v) for k, v in data.items() if k in defaults})
+    except Exception:
+        pass
+    return defaults
+
+
+def save_settings(s):
+    SETTINGS_PATH.write_text(json.dumps(s, indent=2, sort_keys=True))
 
 
 def safe_rel_to_abs(relpath: str) -> Path:
@@ -446,6 +463,7 @@ def api_settings_set():
             v = max(5, min(250, v))
             with lock:
                 state['settings']['rotary_led_step_ms'] = v
+                save_settings(state['settings'])
             add_event(f'SET rotary_led_step_ms={v}')
         with lock:
             return jsonify({'ok': True, 'settings': state['settings']})
@@ -781,7 +799,11 @@ async function tick(){
   if (s.settings && s.settings.rotary_led_step_ms){
     const el=document.getElementById('ledSpeed');
     const val=String(s.settings.rotary_led_step_ms);
-    if(el && el.value!==val){ el.value=val; document.getElementById('ledSpeedVal').textContent=val; }
+    // don't fight user while dragging slider
+    if(el && document.activeElement !== el && el.value!==val){
+      el.value=val;
+      document.getElementById('ledSpeedVal').textContent=val;
+    }
   }
   document.getElementById('player').textContent=(s.player.status||'stopped')+(s.player.file?(' '+s.player.file):'');
   document.getElementById('events').textContent=s.events.join('\\n');
@@ -792,6 +814,8 @@ setInterval(tick,300); tick(); reloadFiles(); reloadMappings();
 
 
 if __name__ == '__main__':
+    with lock:
+        state['settings'] = load_settings()
     threading.Thread(target=monitor_inputs, daemon=True).start()
     threading.Thread(target=monitor_rfid, daemon=True).start()
     threading.Thread(target=player_watchdog, daemon=True).start()
