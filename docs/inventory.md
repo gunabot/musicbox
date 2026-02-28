@@ -1,11 +1,12 @@
 # Project Primer — Inventory & Specs (v1)
 
-Last updated: 2026-02-19
+Last updated: 2026-02-28
 
 ## Status Legend
 - owned = physically in hand
 - ordered = purchased, in transit
 - planned = not purchased yet
+- installed = owned and currently wired/active in build
 
 ## Core Hardware
 
@@ -56,7 +57,7 @@ Last updated: 2026-02-19
 
 9) Waveshare UPS HAT
 - URL: https://www.amazon.de/dp/B08C53K14G
-- Status: ordered
+- Status: installed
 - Key specs (from listing):
   - 5V UPS for Raspberry Pi
   - battery monitoring via I2C
@@ -66,7 +67,7 @@ Last updated: 2026-02-19
 
 10) 3.7" Waveshare e-Paper HAT
 - URL: https://www.amazon.de/dp/B08HK8V3H8
-- Status: ordered
+- Status: owned
 - Key specs:
   - 480x280
   - B/W + 4 gray levels
@@ -82,7 +83,7 @@ Last updated: 2026-02-19
 
 12) USB Conference Mic
 - URL: https://www.amazon.de/dp/B0CP7ZSJK9
-- Status: ordered
+- Status: installed
 - Key specs:
   - USB plug-and-play
   - omnidirectional

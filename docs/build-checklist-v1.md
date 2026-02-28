@@ -1,5 +1,7 @@
 # Project Primer — Build Checklist v1 (Cardboard Lunchbox)
 
+Last synced: 2026-02-28
+
 ## Mechanical
 - [ ] Mount Pi+UPS stack with standoffs (no direct PCB-to-cardboard contact)
 - [ ] Place speaker and mic on opposite sides (10-15cm separation if possible)
@@ -14,18 +16,18 @@
 - [ ] Verify charger powers + charges via UPS HAT
 
 ## Connectivity
-- [ ] USB: RFID + speaker + mic connected
+- [x] USB: RFID + speaker + mic connected
 - [ ] GPIO: e-ink wired (SPI pins)
-- [ ] I2C button breakout wired
-- [ ] Rotary wired
+- [x] I2C button breakout wired
+- [x] Rotary wired
 
 ## OS/Software
-- [ ] Enable SPI
-- [ ] Enable I2C
-- [ ] Reboot
-- [ ] Test speaker output
-- [ ] Test mic input
-- [ ] Test RFID read events
+- [x] Enable SPI
+- [x] Enable I2C
+- [x] Reboot
+- [x] Test speaker output
+- [x] Test mic input
+- [ ] Test RFID read events (device present; live tag read still pending)
 - [ ] Test e-ink sample render
 - [ ] Test each button event + LED
 
@@ -37,5 +39,12 @@
 ## Stability
 - [ ] 30-minute playback test
 - [ ] 30-minute idle test
-- [ ] quick reboot/restart test
+- [x] quick reboot/restart test
 - [ ] low-battery behavior observed and documented
+
+## Evidence (2026-02-28)
+- `i2cdetect -y 1` shows `0x3A` (Adafruit seesaw) and `0x42` (UPS HAT).
+- `/dev/spidev0.0` and `/dev/spidev0.1` are present.
+- `aplay /usr/share/sounds/alsa/Front_Center.wav` completed successfully.
+- `arecord -d 2 -f S16_LE -r 16000 -c 1 /tmp/musicbox-mic-test.wav` completed successfully.
+- Multiple reboot cycles completed while switching overlay modes.
