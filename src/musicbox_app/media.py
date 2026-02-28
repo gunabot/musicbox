@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterator, List
 
 from .config import MEDIA_DIR, MEDIA_EXTENSIONS
 
@@ -19,45 +19,79 @@ def safe_rel_to_abs(relpath: str) -> Path:
     return target
 
 
-def list_media_entries(query: str = '', kind: str = 'all') -> List[Dict[str, str]]:
+def rel_from_abs(path: Path) -> str:
+    return str(path.resolve().relative_to(MEDIA_DIR.resolve()))
+
+
+def _entry_type(path: Path) -> str:
+    return 'dir' if path.is_dir() else 'file'
+
+
+def _iter_entries(base: Path, recursive: bool) -> Iterator[Path]:
+    if not base.exists() or not base.is_dir():
+        return iter(())
+    if recursive:
+        return base.rglob('*')
+    return base.iterdir()
+
+
+def list_media_entries(
+    query: str = '',
+    kind: str = 'all',
+    relpath: str = '',
+    recursive: bool = True,
+) -> List[Dict[str, object]]:
     query_lc = (query or '').strip().lower()
-    entries: List[Dict[str, str]] = []
+    entries: List[Dict[str, object]] = []
+    base = safe_rel_to_abs(relpath)
 
-    for path in MEDIA_DIR.rglob('*'):
-        rel = str(path.relative_to(MEDIA_DIR))
-        entry_type = 'dir' if path.is_dir() else 'file'
-
+    for path in _iter_entries(base, recursive=recursive):
+        entry_type = _entry_type(path)
         if kind == 'files' and entry_type != 'file':
             continue
         if kind == 'dirs' and entry_type != 'dir':
             continue
 
+        rel = rel_from_abs(path)
         if query_lc and query_lc not in rel.lower() and query_lc not in path.name.lower():
             continue
 
-        entries.append({'path': rel, 'name': path.name, 'type': entry_type})
+        item: Dict[str, object] = {
+            'path': rel,
+            'name': path.name,
+            'type': entry_type,
+        }
+        if path.is_file():
+            try:
+                item['size_bytes'] = path.stat().st_size
+            except Exception:
+                item['size_bytes'] = None
+        entries.append(item)
 
-    entries.sort(key=lambda item: (item['type'] == 'file', item['path'].lower()))
+    entries.sort(key=lambda item: (item['type'] == 'file', str(item['path']).lower()))
     return entries
 
 
-def list_audio_entries(query: str = '') -> List[Dict[str, str]]:
+def list_audio_entries(query: str = '', relpath: str = '') -> List[Dict[str, object]]:
     query_lc = (query or '').strip().lower()
-    entries: List[Dict[str, str]] = []
+    entries: List[Dict[str, object]] = []
+    base = safe_rel_to_abs(relpath)
+    if not base.exists() or not base.is_dir():
+        return entries
 
-    for path in MEDIA_DIR.rglob('*'):
+    for path in base.rglob('*'):
         if not path.is_file():
             continue
         if path.suffix.lower() not in MEDIA_EXTENSIONS:
             continue
 
-        rel = str(path.relative_to(MEDIA_DIR))
-        if query_lc and query_lc not in rel.lower():
+        rel = rel_from_abs(path)
+        if query_lc and query_lc not in rel.lower() and query_lc not in path.name.lower():
             continue
 
         entries.append({'path': rel, 'name': path.name, 'type': 'file'})
 
-    entries.sort(key=lambda item: item['path'].lower())
+    entries.sort(key=lambda item: str(item['path']).lower())
     return entries
 
 
@@ -70,22 +104,90 @@ def list_audio_files_recursive(folder: Path) -> List[Path]:
     return files
 
 
-def media_tree(base: Path | None = None) -> Dict[str, object]:
-    node_base = MEDIA_DIR if base is None else base
+def tree_node(relpath: str = '', include_files: bool = False) -> Dict[str, object]:
+    base = safe_rel_to_abs(relpath)
+    if not base.exists() or not base.is_dir():
+        raise FileNotFoundError(relpath or '.')
+
     node: Dict[str, object] = {
-        'name': node_base.name,
-        'path': str(node_base.relative_to(MEDIA_DIR)) if node_base != MEDIA_DIR else '',
+        'name': base.name if relpath else 'media',
+        'path': rel_from_abs(base) if relpath else '',
         'type': 'dir',
         'children': [],
     }
-    children = sorted(node_base.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+
+    children = sorted(base.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
     for child in children:
+        if child.is_file() and not include_files:
+            continue
+
+        child_item: Dict[str, object] = {
+            'name': child.name,
+            'path': rel_from_abs(child),
+            'type': _entry_type(child),
+        }
+
         if child.is_dir():
-            node['children'].append(media_tree(child))
+            try:
+                child_item['has_children'] = any(grand.is_dir() for grand in child.iterdir())
+            except Exception:
+                child_item['has_children'] = False
         else:
-            node['children'].append({
-                'name': child.name,
-                'path': str(child.relative_to(MEDIA_DIR)),
-                'type': 'file',
-            })
+            try:
+                child_item['size_bytes'] = child.stat().st_size
+            except Exception:
+                child_item['size_bytes'] = None
+
+        node['children'].append(child_item)
+
     return node
+
+
+def path_info(relpath: str) -> Dict[str, object]:
+    relpath = (relpath or '').strip().lstrip('/')
+    target = safe_rel_to_abs(relpath)
+    if not target.exists():
+        return {'path': relpath, 'exists': False}
+
+    if target.is_file():
+        try:
+            size_bytes = target.stat().st_size
+        except Exception:
+            size_bytes = None
+        return {
+            'path': rel_from_abs(target),
+            'exists': True,
+            'type': 'file',
+            'size_bytes': size_bytes,
+            'file_count': 1,
+            'dir_count': 0,
+        }
+
+    file_count = 0
+    dir_count = 0
+    total_size = 0
+    for item in target.rglob('*'):
+        if item.is_dir():
+            dir_count += 1
+            continue
+        if item.is_file():
+            file_count += 1
+            try:
+                total_size += item.stat().st_size
+            except Exception:
+                pass
+
+    try:
+        child_count = sum(1 for _ in target.iterdir())
+    except Exception:
+        child_count = 0
+
+    return {
+        'path': rel_from_abs(target),
+        'exists': True,
+        'type': 'dir',
+        'size_bytes': total_size,
+        'file_count': file_count,
+        'dir_count': dir_count,
+        'child_count': child_count,
+    }

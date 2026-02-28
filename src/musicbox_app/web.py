@@ -11,8 +11,9 @@ from .media import (
     ensure_media_root,
     list_audio_entries,
     list_media_entries,
-    media_tree,
+    path_info,
     safe_rel_to_abs,
+    tree_node,
 )
 from .monitors import start_background_monitors
 from .player import PlayerManager
@@ -31,6 +32,13 @@ def _int_query(name: str, default: int = 0) -> int:
         return int(value)
     except Exception:
         return default
+
+
+def _bool_query(name: str, default: bool = False) -> bool:
+    value = request.args.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def create_app() -> Flask:
@@ -75,19 +83,50 @@ def create_app() -> Flask:
     def api_files():
         query = request.args.get('q', '').strip()
         kind = request.args.get('kind', 'all').strip().lower()
+        relpath = request.args.get('path', '').strip().lstrip('/')
+        recursive = _bool_query('recursive', default=bool(query))
+        include_tree = _bool_query('include_tree', default=False)
+
         if kind not in {'all', 'files', 'dirs'}:
             kind = 'all'
 
-        entries = list_media_entries(query=query, kind=kind)
-        audio_entries = list_audio_entries(query=query)
+        try:
+            entries = list_media_entries(query=query, kind=kind, relpath=relpath, recursive=recursive)
+            audio_entries = list_audio_entries(query=query, relpath=relpath)
+        except Exception as exc:
+            return _json_error(str(exc))
 
-        return jsonify({
+        payload: Dict[str, Any] = {
             'ok': True,
             'media_dir': str(MEDIA_DIR),
+            'cwd': relpath,
             'entries': entries,
             'audio': audio_entries,
-            'tree': media_tree(),
-        })
+            'recursive': recursive,
+        }
+        if include_tree:
+            payload['tree'] = tree_node('', include_files=False)
+        return jsonify(payload)
+
+    @app.get('/api/tree')
+    def api_tree():
+        relpath = request.args.get('path', '').strip().lstrip('/')
+        include_files = _bool_query('include_files', default=False)
+        try:
+            node = tree_node(relpath=relpath, include_files=include_files)
+            return jsonify({'ok': True, 'node': node})
+        except Exception as exc:
+            return _json_error(str(exc), 404)
+
+    @app.get('/api/pathinfo')
+    def api_pathinfo():
+        relpath = request.args.get('path', '').strip().lstrip('/')
+        if not relpath:
+            return _json_error('path required')
+        try:
+            return jsonify({'ok': True, 'info': path_info(relpath)})
+        except Exception as exc:
+            return _json_error(str(exc))
 
     @app.post('/api/play')
     def api_play():
