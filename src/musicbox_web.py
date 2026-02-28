@@ -212,6 +212,15 @@ def media_tree(base: Path = MEDIA_DIR):
     return node
 
 
+def media_entries():
+    entries = []
+    for p in MEDIA_DIR.rglob('*'):
+        rel = str(p.relative_to(MEDIA_DIR))
+        entries.append({'path': rel, 'name': p.name, 'type': 'dir' if p.is_dir() else 'file'})
+    entries.sort(key=lambda e: (e['type'] == 'file', e['path'].lower()))
+    return entries
+
+
 def stop_player():
     global player_proc
     if player_proc and player_proc.poll() is None:
@@ -283,7 +292,7 @@ def api_status():
 
 @app.get('/api/files')
 def api_files():
-    return jsonify({'media_dir': str(MEDIA_DIR), 'files': media_files(), 'tree': media_tree()})
+    return jsonify({'media_dir': str(MEDIA_DIR), 'files': media_files(), 'tree': media_tree(), 'entries': media_entries()})
 
 
 @app.post('/api/play')
@@ -423,7 +432,10 @@ small{color:#9ca3af}
 </div>
 <small>Folder uploads preserve relative paths when browser supports it.</small>
 
-<ul id=files></ul>
+<table id='filesTable' style='width:100%;margin-top:10px;border-collapse:collapse'>
+  <thead><tr><th align='left'>Type</th><th align='left'>Path</th><th align='left'>Mapped card</th><th align='left'>Actions</th></tr></thead>
+  <tbody id='files'></tbody>
+</table>
 
 <h3>Card mappings</h3>
 <div class='row'>
@@ -438,18 +450,36 @@ small{color:#9ca3af}
 <h3>Events</h3><pre id=events></pre>
 <script>
 async function api(path, opts){ const r = await fetch(path, opts); return await r.json(); }
+let mappings = {};
+
+function invertMappings(){
+  const inv = {};
+  for (const [card,target] of Object.entries(mappings||{})){ inv[target]=card; }
+  return inv;
+}
 
 async function reloadFiles(){
   const d = await api('/api/files');
-  const ul = document.getElementById('files');
-  ul.innerHTML='';
-  d.files.forEach(f=>{
-    const li=document.createElement('li');
-    li.innerHTML = `${f} `;
-    const bPlay=document.createElement('button'); bPlay.textContent='play'; bPlay.onclick=()=>play(f);
-    const bDel=document.createElement('button'); bDel.textContent='delete'; bDel.onclick=()=>delPath(f);
-    li.appendChild(bPlay); li.appendChild(document.createTextNode(' ')); li.appendChild(bDel);
-    ul.appendChild(li);
+  const tbody = document.getElementById('files');
+  const inv = invertMappings();
+  tbody.innerHTML='';
+  (d.entries||[]).forEach(e=>{
+    const tr=document.createElement('tr');
+    tr.innerHTML = `<td>${e.type}</td><td>${e.path}</td><td>${inv[e.path]||''}</td>`;
+    const td=document.createElement('td');
+
+    if(e.type==='file'){
+      const bPlay=document.createElement('button'); bPlay.textContent='play'; bPlay.onclick=()=>play(e.path); td.appendChild(bPlay);
+      td.appendChild(document.createTextNode(' '));
+    }
+
+    const bMap=document.createElement('button'); bMap.textContent='map'; bMap.onclick=()=>{document.getElementById('mapTarget').value=e.path; if(inv[e.path]) document.getElementById('mapCard').value=inv[e.path];}; td.appendChild(bMap);
+    td.appendChild(document.createTextNode(' '));
+
+    const bDel=document.createElement('button'); bDel.textContent='delete'; bDel.onclick=()=>delPath(e.path); td.appendChild(bDel);
+
+    tr.appendChild(td);
+    tbody.appendChild(tr);
   });
 }
 
@@ -460,7 +490,9 @@ async function mkDir(){ const p=document.getElementById('targetDir').value.trim(
 
 async function reloadMappings(){
   const d = await api('/api/mappings');
-  document.getElementById('mappings').textContent = JSON.stringify(d.mappings || {}, null, 2);
+  mappings = d.mappings || {};
+  document.getElementById('mappings').textContent = JSON.stringify(mappings, null, 2);
+  await reloadFiles();
 }
 async function saveMapping(){
   const card=document.getElementById('mapCard').value.trim();
