@@ -20,9 +20,6 @@
     libKind: 'all',
     libMapped: 'all',
     libSearch: '',
-    sliderEditing: false,
-    sliderDirty: false,
-    volumeSliderEditing: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -46,6 +43,14 @@
     }
     const parts = norm.split('/');
     return parts[parts.length - 1];
+  }
+
+  function clampInt(value, min, max, fallback) {
+    const parsed = Number.parseInt(String(value ?? ''), 10);
+    if (Number.isNaN(parsed)) {
+      return fallback;
+    }
+    return Math.max(min, Math.min(max, parsed));
   }
 
   function normalizeMappingEntry(value) {
@@ -76,13 +81,6 @@
     const el = $(id);
     if (el) {
       el.textContent = value == null || value === '' ? '-' : String(value);
-    }
-  }
-
-  function setInlineText(id, value) {
-    const el = $(id);
-    if (el) {
-      el.textContent = value == null ? '' : String(value);
     }
   }
 
@@ -247,10 +245,6 @@
     }
   }
 
-  function renderSliderDirty() {
-    setInlineText('led-speed-dirty', state.sliderDirty ? 'Unsaved changes' : '');
-  }
-
   function setBatteryBadge(percent) {
     const badge = $('badge-battery');
     if (!badge) {
@@ -411,21 +405,15 @@
     }
 
     const speed = snapshot.settings && snapshot.settings.rotary_led_step_ms;
-    if (speed != null) {
-      const slider = $('led-speed');
-      if (slider && !state.sliderDirty && !state.sliderEditing) {
-        slider.value = String(speed);
-        setText('led-speed-value', speed);
-      }
+    const ledInput = $('led-speed');
+    if (speed != null && ledInput && document.activeElement !== ledInput) {
+      ledInput.value = String(speed);
     }
 
     const volumePerTurn = snapshot.settings && snapshot.settings.rotary_volume_per_turn;
-    if (volumePerTurn != null) {
-      const slider = $('rotary-volume-per-turn');
-      if (slider && !state.volumeSliderEditing) {
-        slider.value = String(volumePerTurn);
-        setText('rotary-volume-per-turn-value', volumePerTurn);
-      }
+    const volumeInput = $('rotary-volume-per-turn');
+    if (volumePerTurn != null && volumeInput && document.activeElement !== volumeInput) {
+      volumeInput.value = String(volumePerTurn);
     }
 
     if (snapshot.last_card) {
@@ -1477,8 +1465,13 @@
   }
 
   async function saveRotarySettings() {
-    const ledSpeed = Number($('led-speed').value || 25);
-    const volumePerTurn = Number($('rotary-volume-per-turn').value || 100);
+    const ledInput = $('led-speed');
+    const volumeInput = $('rotary-volume-per-turn');
+    const ledSpeed = clampInt(ledInput.value, 5, 250, 25);
+    const volumePerTurn = clampInt(volumeInput.value, 20, 300, 100);
+    ledInput.value = String(ledSpeed);
+    volumeInput.value = String(volumePerTurn);
+
     const payload = await apiFetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1489,73 +1482,40 @@
     });
     if (payload.settings && payload.settings.rotary_led_step_ms != null) {
       $('led-speed').value = String(payload.settings.rotary_led_step_ms);
-      setText('led-speed-value', payload.settings.rotary_led_step_ms);
     }
     if (payload.settings && payload.settings.rotary_volume_per_turn != null) {
       $('rotary-volume-per-turn').value = String(payload.settings.rotary_volume_per_turn);
-      setText('rotary-volume-per-turn-value', payload.settings.rotary_volume_per_turn);
     }
-    state.sliderDirty = false;
-    state.sliderEditing = false;
-    state.volumeSliderEditing = false;
-    renderSliderDirty();
     toast('Settings saved');
   }
 
   function bindSettings() {
-    const slider = $('led-speed');
-    const volumeSlider = $('rotary-volume-per-turn');
+    const ledInput = $('led-speed');
+    const volumeInput = $('rotary-volume-per-turn');
     const spotifyClient = $('spotify-client-id');
     const spotifyDevice = $('spotify-device-name');
 
-    slider.addEventListener('pointerdown', () => {
-      state.sliderEditing = true;
-    });
-
-    slider.addEventListener('input', (event) => {
-      state.sliderDirty = true;
-      setText('led-speed-value', event.target.value);
-      renderSliderDirty();
-    });
-
-    slider.addEventListener('change', async () => {
+    const saveRotarySettingsSafe = async () => {
       try {
         await saveRotarySettings();
       } catch (err) {
         toast(`Save settings failed: ${err.message}`, 'error');
       }
-    });
+    };
 
-    slider.addEventListener('blur', () => {
-      state.sliderEditing = false;
-    });
-
-    $('save-settings').addEventListener('click', async () => {
-      try {
-        await saveRotarySettings();
-      } catch (err) {
-        toast(`Save settings failed: ${err.message}`, 'error');
-      }
-    });
-
-    volumeSlider.addEventListener('pointerdown', () => {
-      state.volumeSliderEditing = true;
-    });
-
-    volumeSlider.addEventListener('input', (event) => {
-      setText('rotary-volume-per-turn-value', event.target.value);
-    });
-
-    volumeSlider.addEventListener('change', async () => {
-      try {
-        await saveRotarySettings();
-      } catch (err) {
-        toast(`Save settings failed: ${err.message}`, 'error');
-      }
-    });
-
-    volumeSlider.addEventListener('blur', () => {
-      state.volumeSliderEditing = false;
+    [ledInput, volumeInput].forEach((input) => {
+      input.addEventListener('change', () => {
+        void saveRotarySettingsSafe();
+      });
+      input.addEventListener('blur', () => {
+        void saveRotarySettingsSafe();
+      });
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          input.blur();
+        }
+      });
     });
 
     spotifyClient.addEventListener('input', () => {
@@ -1630,7 +1590,6 @@
     bindEventsPanel();
 
     updateUploadStatus();
-    renderSliderDirty();
 
     try {
       await loadMappings();
