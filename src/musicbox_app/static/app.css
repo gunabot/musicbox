@@ -193,6 +193,23 @@ button:hover {
   transform: translateY(-1px);
 }
 
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  transform: none;
+  filter: grayscale(0.2);
+}
+
+button:disabled:hover {
+  transform: none;
+  filter: grayscale(0.2);
+}
+
+input:disabled,
+select:disabled {
+  opacity: 0.65;
+}
+
 button.primary {
   background: var(--accent);
   border-color: transparent;

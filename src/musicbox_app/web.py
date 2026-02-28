@@ -6,7 +6,16 @@ from typing import Any, Dict
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
-from .config import DEFAULT_SETTINGS, MEDIA_DIR
+from .config import (
+    DEFAULT_SETTINGS,
+    MEDIA_DIR,
+    SPOTIFY_CAPTURE_DEVICE_NAME,
+    SPOTIFY_CACHE_DIR,
+    SPOTIFY_CACHE_INDEX_PATH,
+    SPOTIFY_FETCH_COMMAND,
+    SPOTIFY_OAUTH_PATH,
+)
+from .mappings import normalize_mapping_value
 from .media import (
     ensure_media_root,
     list_audio_entries,
@@ -17,6 +26,7 @@ from .media import (
 )
 from .monitors import start_background_monitors
 from .player import PlayerManager
+from .spotify_auth import SpotifyAuthManager
 from .store import AppStore
 
 
@@ -46,7 +56,8 @@ def create_app() -> Flask:
 
     app = Flask(__name__, template_folder='templates', static_folder='static')
     store = AppStore()
-    player = PlayerManager(store)
+    spotify_auth = SpotifyAuthManager(store)
+    player = PlayerManager(store, spotify_auth)
     start_background_monitors(store, player)
     store.add_event('musicbox service started')
 
@@ -58,7 +69,7 @@ def create_app() -> Flask:
     def api_status():
         since_id = _int_query('since', 0)
         snapshot = store.snapshot(since_id=since_id)
-        return jsonify({'ok': True, **snapshot})
+        return jsonify({'ok': True, **snapshot, 'spotify': spotify_auth.status()})
 
     @app.get('/api/stream')
     def api_stream():
@@ -67,6 +78,7 @@ def create_app() -> Flask:
             last_event_id = 0
             while True:
                 payload = store.snapshot(since_id=last_event_id)
+                payload['spotify'] = spotify_auth.status()
                 events = payload.get('events', [])
                 if events:
                     last_event_id = int(events[-1]['id'])
@@ -131,11 +143,19 @@ def create_app() -> Flask:
     @app.post('/api/play')
     def api_play():
         data: Dict[str, Any] = request.get_json(force=True, silent=True) or {}
-        relpath = str(data.get('file', '')).strip()
-        if not relpath:
-            return _json_error('file required')
+        source_type = str(data.get('type', '')).strip().lower()
 
         try:
+            if source_type == 'spotify':
+                target = str(data.get('target', '')).strip()
+                if not target:
+                    return _json_error('target required for spotify')
+                relpath = player.play_spotify(target)
+                return jsonify({'ok': True, 'source': 'spotify', 'cached_path': relpath})
+
+            relpath = str(data.get('file', '')).strip()
+            if not relpath:
+                return _json_error('file required')
             player.play(relpath)
             return jsonify({'ok': True})
         except Exception as exc:
@@ -175,6 +195,80 @@ def create_app() -> Flask:
             snapshot = store.snapshot(since_id=0, event_limit=1)
             return jsonify({'ok': True, 'settings': snapshot['settings']})
         except Exception as exc:
+            return _json_error(str(exc))
+
+    @app.get('/api/spotify/status')
+    def api_spotify_status():
+        return jsonify({'ok': True, 'spotify': spotify_auth.status()})
+
+    @app.post('/api/spotify/config')
+    def api_spotify_config():
+        data: Dict[str, Any] = request.get_json(force=True, silent=True) or {}
+        try:
+            if 'client_id' in data:
+                spotify_auth.set_client_id(str(data.get('client_id', '')).strip())
+            if 'device_name' in data:
+                spotify_auth.set_device_name(str(data.get('device_name', '')).strip())
+            return jsonify({'ok': True, 'spotify': spotify_auth.status()})
+        except Exception as exc:
+            return _json_error(str(exc))
+
+    @app.post('/api/spotify/login/start')
+    def api_spotify_login_start():
+        try:
+            host_url = request.host_url.rstrip('/')
+            auth_url = spotify_auth.start_login(host_url)
+            return jsonify({'ok': True, 'auth_url': auth_url})
+        except Exception as exc:
+            return _json_error(str(exc))
+
+    @app.get('/api/spotify/callback')
+    def api_spotify_callback():
+        error = str(request.args.get('error', '')).strip()
+        if error:
+            store.add_event(f'SPOTIFY_LOGIN_ERR {error}', level='error')
+            return (
+                "<!doctype html><html><body><h3>Spotify login failed</h3>"
+                f"<p>{error}</p><p>You can close this tab.</p></body></html>"
+            )
+
+        code = str(request.args.get('code', '')).strip()
+        state = str(request.args.get('state', '')).strip()
+        try:
+            spotify_auth.handle_callback(code=code, state=state)
+            return (
+                "<!doctype html><html><body><h3>Spotify connected</h3>"
+                "<p>You can close this tab and return to Musicbox.</p>"
+                "<script>setTimeout(()=>window.close(), 500);</script>"
+                "</body></html>"
+            )
+        except Exception as exc:
+            store.add_event(f'SPOTIFY_LOGIN_ERR {exc}', level='error')
+            return (
+                "<!doctype html><html><body><h3>Spotify login failed</h3>"
+                f"<p>{exc}</p><p>You can close this tab.</p></body></html>"
+            )
+
+    @app.post('/api/spotify/disconnect')
+    def api_spotify_disconnect():
+        try:
+            status = spotify_auth.disconnect()
+            return jsonify({'ok': True, 'spotify': status})
+        except Exception as exc:
+            return _json_error(str(exc))
+
+    @app.post('/api/spotify/cache')
+    def api_spotify_cache():
+        data: Dict[str, Any] = request.get_json(force=True, silent=True) or {}
+        target = str(data.get('target', '')).strip()
+        if not target:
+            return _json_error('spotify target required')
+        try:
+            spotify_auth.get_access_token(force_refresh=False)
+            relpath = player.spotify_cache.resolve(target)
+            return jsonify({'ok': True, 'cached_path': relpath})
+        except Exception as exc:
+            store.add_event(f'SPOTIFY_CACHE_ERR {exc}', level='error')
             return _json_error(str(exc))
 
     @app.post('/api/mkdir')
@@ -287,15 +381,33 @@ def create_app() -> Flask:
     def api_mappings_set():
         data: Dict[str, Any] = request.get_json(force=True, silent=True) or {}
         card = str(data.get('card', '')).strip()
-        target = str(data.get('target', '')).strip().lstrip('/')
         if not card:
             return _json_error('card required')
 
         mappings = store.load_mappings()
-        if target:
-            safe_rel_to_abs(target)
-            mappings[card] = target
-            store.add_event(f'MAP_SET {card} -> {target}')
+        target_raw = str(data.get('target', '')).strip()
+        mapping_type = str(data.get('type', '')).strip().lower() or 'local'
+
+        if mapping_type == 'local':
+            target_raw = target_raw.lstrip('/')
+
+        if target_raw:
+            try:
+                normalized = normalize_mapping_value(
+                    {'type': mapping_type, 'target': target_raw},
+                    strict=True,
+                )
+            except Exception as exc:
+                return _json_error(str(exc))
+
+            if normalized is None:
+                return _json_error('invalid mapping payload')
+
+            if normalized['type'] == 'local':
+                safe_rel_to_abs(normalized['target'])
+
+            mappings[card] = normalized
+            store.add_event(f"MAP_SET {card} -> {normalized['type']}:{normalized['target']}")
         else:
             mappings.pop(card, None)
             store.add_event(f'MAP_DEL {card}')
@@ -309,6 +421,13 @@ def create_app() -> Flask:
             'ok': True,
             'settings_defaults': DEFAULT_SETTINGS,
             'media_dir': str(MEDIA_DIR),
+            'spotify': {
+                'cache_dir': str(SPOTIFY_CACHE_DIR),
+                'cache_index_path': str(SPOTIFY_CACHE_INDEX_PATH),
+                'fetch_command': SPOTIFY_FETCH_COMMAND,
+                'oauth_path': str(SPOTIFY_OAUTH_PATH),
+                'default_device_name': SPOTIFY_CAPTURE_DEVICE_NAME,
+            },
         })
 
     return app

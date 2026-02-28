@@ -3,6 +3,7 @@
 
   const state = {
     snapshot: null,
+    spotify: null,
     mappings: {},
     entries: [],
     selectedPath: '',
@@ -44,6 +45,15 @@
     }
     const parts = norm.split('/');
     return parts[parts.length - 1];
+  }
+
+  function normalizeMappingEntry(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const type = String(value.type || 'local').trim().toLowerCase() || 'local';
+      const target = String(value.target || '').trim();
+      return { type, target };
+    }
+    return { type: 'local', target: normalizeRel(value || '') };
   }
 
   function ancestors(path) {
@@ -113,6 +123,17 @@
     }
     parts.push(`${minutes}m`);
     return parts.join(' ');
+  }
+
+  function formatDateTime(epochSeconds) {
+    if (!epochSeconds || Number.isNaN(Number(epochSeconds))) {
+      return '-';
+    }
+    const date = new Date(Number(epochSeconds) * 1000);
+    if (Number.isNaN(date.getTime())) {
+      return '-';
+    }
+    return date.toLocaleString();
   }
 
   function loadUiPrefs() {
@@ -247,6 +268,91 @@
     }
   }
 
+  function setDisabled(id, disabled, reason = '') {
+    const el = $(id);
+    if (!el) {
+      return;
+    }
+    el.disabled = Boolean(disabled);
+    el.title = disabled ? reason : '';
+  }
+
+  function spotifyCapabilities(spotify) {
+    const status = spotify || {};
+    const user = status.user || {};
+    const product = String(user.product || '').trim().toLowerCase();
+    const configured = Boolean(status.client_id_set || status.configured || status.client_id);
+    const connected = Boolean(status.connected);
+    const accessValid = Boolean(status.access_valid);
+    const hasStreamingScope = Boolean(status.has_streaming_scope);
+    const premiumKnown = Boolean(product);
+    const isPremium = product === 'premium';
+
+    let guidance = 'Set Spotify client ID to begin.';
+    if (!configured) {
+      guidance = 'Step 1: enter Spotify client ID, then click Save Spotify Config.';
+    } else if (!connected) {
+      guidance = 'Step 2: click Connect Spotify and approve access in the popup.';
+    } else if (!hasStreamingScope) {
+      guidance = 'Reconnect Spotify to grant the streaming scope.';
+    } else if (premiumKnown && !isPremium) {
+      guidance = 'Spotify Premium is required for transfer/capture playback.';
+    } else if (!accessValid) {
+      guidance = 'Spotify token is refreshing. Please wait a moment.';
+    } else {
+      guidance = 'Ready: first play captures into cache, then playback uses local library.';
+    }
+
+    return {
+      configured,
+      connected,
+      accessValid,
+      hasStreamingScope,
+      premiumKnown,
+      isPremium,
+      ready: configured && connected && hasStreamingScope && accessValid && (!premiumKnown || isPremium),
+      guidance,
+    };
+  }
+
+  function renderSpotifyStatus(spotify) {
+    const status = spotify || {};
+    const user = status.user || {};
+    const caps = spotifyCapabilities(status);
+
+    setText('spotify-status', caps.connected ? (caps.accessValid ? 'connected' : 'refreshing') : 'not connected');
+    setText('spotify-user', user.display_name || user.id || '-');
+    setText('spotify-product', user.product || '-');
+    setText('spotify-device', status.device_name || '-');
+    setText('spotify-expiry', formatDateTime(status.expires_at));
+    setText('spotify-streaming', caps.hasStreamingScope ? 'yes' : 'missing');
+    setText('spotify-scope', status.scope || '-');
+    setText('spotify-guidance', caps.guidance);
+
+    const clientInput = $('spotify-client-id');
+    if (clientInput && status.client_id && (!clientInput.value || clientInput.dataset.autofilled === '1')) {
+      clientInput.value = String(status.client_id);
+      clientInput.dataset.autofilled = '1';
+    }
+
+    const deviceInput = $('spotify-device-name');
+    if (deviceInput && status.device_name && (!deviceInput.value || deviceInput.dataset.autofilled === '1')) {
+      deviceInput.value = String(status.device_name);
+      deviceInput.dataset.autofilled = '1';
+    }
+
+    const connectBtn = $('spotify-connect');
+    if (connectBtn) {
+      connectBtn.textContent = caps.connected ? 'Reconnect Spotify' : 'Connect Spotify';
+    }
+
+    const hasClientDraft = Boolean(clientInput && String(clientInput.value || '').trim());
+    setDisabled('spotify-connect', !(caps.configured || hasClientDraft), 'Set Spotify client ID first');
+    setDisabled('spotify-disconnect', !caps.connected, 'Spotify is not connected');
+    setDisabled('spotify-cache-btn', !caps.ready, 'Connect Spotify with streaming scope first');
+    setDisabled('spotify-cache-uri', !caps.connected, 'Connect Spotify first');
+  }
+
   function renderStatus(snapshot) {
     if (!snapshot) {
       return;
@@ -263,6 +369,8 @@
     setBatteryBadge(health.battery_percent);
 
     setText('now-file', player.file || 'No active track');
+    setText('now-source', `Source: ${player.source || 'local'}`);
+    setText('now-spotify-uri', player.spotify_uri ? `Spotify: ${player.spotify_uri}` : 'Spotify: -');
     setText('now-volume', `Volume: ${player.volume == null ? '--' : player.volume}`);
 
     setText('hw-b1', buttons[0] ? 'pressed' : 'released');
@@ -318,11 +426,19 @@
       }
     }
 
+    if (snapshot.spotify) {
+      state.spotify = snapshot.spotify;
+      renderSpotifyStatus(snapshot.spotify);
+    }
+
     appendEvents(snapshot.events || []);
   }
 
   function applySnapshot(payload) {
     state.snapshot = payload;
+    if (payload && payload.spotify) {
+      state.spotify = payload.spotify;
+    }
     renderStatus(payload);
   }
 
@@ -510,11 +626,15 @@
 
   function mappedCardsByPath() {
     const map = {};
-    for (const [card, target] of Object.entries(state.mappings || {})) {
-      if (!map[target]) {
-        map[target] = [];
+    for (const [card, rawMapping] of Object.entries(state.mappings || {})) {
+      const mapping = normalizeMappingEntry(rawMapping);
+      if (mapping.type !== 'local' || !mapping.target) {
+        continue;
       }
-      map[target].push(card);
+      if (!map[mapping.target]) {
+        map[mapping.target] = [];
+      }
+      map[mapping.target].push(card);
     }
     return map;
   }
@@ -640,6 +760,7 @@
       mapBtn.textContent = 'Map';
       mapBtn.addEventListener('click', () => {
         setSelectedPath(entry.path);
+        $('map-type').value = 'local';
         $('map-target').value = entry.path;
         activateTab('cards');
       });
@@ -698,20 +819,22 @@
 
   async function saveMapping(remove = false) {
     const card = ($('map-card').value || '').trim();
-    const target = remove ? '' : normalizeRel(($('map-target').value || '').trim());
+    const mappingType = (($('map-type').value || 'local').trim().toLowerCase() || 'local');
+    const rawTarget = ($('map-target').value || '').trim();
+    const target = remove ? '' : (mappingType === 'local' ? normalizeRel(rawTarget) : rawTarget);
     if (!card) {
       toast('Card ID is required', 'warning');
       return;
     }
     if (!remove && !target) {
-      toast('Target path is required', 'warning');
+      toast('Target is required', 'warning');
       return;
     }
 
     const payload = await apiFetch('/api/mappings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ card, target }),
+      body: JSON.stringify({ card, type: mappingType, target }),
     });
 
     state.mappings = payload.mappings || {};
@@ -728,15 +851,20 @@
     tbody.textContent = '';
 
     const rows = Object.entries(state.mappings || {}).sort((a, b) => a[0].localeCompare(b[0]));
-    for (const [card, target] of rows) {
+    for (const [card, rawMapping] of rows) {
+      const mapping = normalizeMappingEntry(rawMapping);
       const tr = document.createElement('tr');
 
       const cardTd = document.createElement('td');
       cardTd.textContent = card;
       tr.appendChild(cardTd);
 
+      const typeTd = document.createElement('td');
+      typeTd.textContent = mapping.type;
+      tr.appendChild(typeTd);
+
       const targetTd = document.createElement('td');
-      targetTd.textContent = target;
+      targetTd.textContent = mapping.target;
       tr.appendChild(targetTd);
 
       const actionsTd = document.createElement('td');
@@ -746,8 +874,16 @@
       useBtn.textContent = 'Use';
       useBtn.addEventListener('click', () => {
         $('map-card').value = card;
-        $('map-target').value = target;
-        setSelectedPath(target);
+        $('map-type').value = mapping.type;
+        $('map-target').value = mapping.target;
+        if (mapping.type === 'local') {
+          setSelectedPath(mapping.target);
+        } else if (mapping.type === 'spotify') {
+          const cacheInput = $('spotify-cache-uri');
+          if (cacheInput) {
+            cacheInput.value = mapping.target;
+          }
+        }
         activateTab('cards');
       });
       actionsTd.appendChild(useBtn);
@@ -756,10 +892,13 @@
       playBtn.textContent = 'Play';
       playBtn.addEventListener('click', async () => {
         try {
+          const payload = mapping.type === 'spotify'
+            ? { type: 'spotify', target: mapping.target }
+            : { file: mapping.target };
           await apiFetch('/api/play', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file: target }),
+            body: JSON.stringify(payload),
           });
           toast(`Playing mapping for card ${card}`);
         } catch (err) {
@@ -1133,11 +1272,27 @@
   }
 
   function bindCards() {
+    const mapType = $('map-type');
+    const mapTarget = $('map-target');
+
+    const syncMapTypeUi = () => {
+      const kind = String(mapType.value || 'local').trim().toLowerCase();
+      if (kind === 'spotify') {
+        mapTarget.placeholder = 'spotify:playlist:... or https://open.spotify.com/...';
+      } else {
+        mapTarget.placeholder = 'target file/folder under /media';
+      }
+    };
+
+    mapType.addEventListener('change', syncMapTypeUi);
+    syncMapTypeUi();
+
     $('map-from-selected').addEventListener('click', () => {
       if (!state.selectedPath) {
         toast('Select an item in Library first', 'warning');
         return;
       }
+      $('map-type').value = 'local';
       $('map-target').value = state.selectedPath;
       toast('Mapped target from selected item');
     });
@@ -1153,6 +1308,7 @@
         return;
       }
       $('map-card').value = String(lastCard);
+      $('map-type').value = 'local';
       $('map-target').value = state.selectedPath;
       try {
         await saveMapping(false);
@@ -1186,6 +1342,130 @@
     });
   }
 
+  async function refreshSpotifyStatus() {
+    const payload = await apiFetch('/api/spotify/status');
+    state.spotify = payload.spotify || {};
+    renderSpotifyStatus(state.spotify);
+    return payload;
+  }
+
+  async function saveSpotifyConfig() {
+    const clientId = ($('spotify-client-id').value || '').trim();
+    const deviceName = ($('spotify-device-name').value || '').trim();
+    const existingClientId = state.spotify && state.spotify.client_id ? String(state.spotify.client_id).trim() : '';
+    const effectiveClientId = clientId || existingClientId;
+    if (!effectiveClientId) {
+      toast('Spotify client id is required', 'warning');
+      return false;
+    }
+    const payload = await apiFetch('/api/spotify/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: effectiveClientId, device_name: deviceName }),
+    });
+    state.spotify = payload.spotify || {};
+    renderSpotifyStatus(state.spotify);
+    toast('Spotify config saved');
+    return true;
+  }
+
+  async function connectSpotify() {
+    const payload = await apiFetch('/api/spotify/login/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const authUrl = payload.auth_url;
+    if (!authUrl) {
+      throw new Error('missing spotify auth URL');
+    }
+
+    const popup = window.open(authUrl, 'spotify-auth', 'width=560,height=760');
+    if (!popup) {
+      toast('Popup blocked. Open this URL manually from browser console log.', 'warning');
+      // eslint-disable-next-line no-console
+      console.log('Spotify auth URL:', authUrl);
+      return;
+    }
+
+    toast('Complete Spotify login in the popup window');
+    const started = Date.now();
+    let finished = false;
+    const finish = (message, level = 'info') => {
+      if (finished) {
+        return;
+      }
+      finished = true;
+      window.clearInterval(timer);
+      if (message) {
+        toast(message, level);
+      }
+    };
+
+    const timer = window.setInterval(async () => {
+      const elapsed = Date.now() - started;
+      let latest = state.spotify || {};
+      try {
+        const refreshed = await refreshSpotifyStatus();
+        latest = refreshed.spotify || latest;
+      } catch (_err) {
+        // keep polling silently
+      }
+
+      const caps = spotifyCapabilities(latest);
+      if (caps.connected && caps.hasStreamingScope) {
+        finish('Spotify connected');
+        return;
+      }
+
+      if (elapsed > 180000) {
+        finish('Spotify login timed out', 'warning');
+        return;
+      }
+
+      if (popup.closed) {
+        finish(caps.connected ? 'Spotify connected' : 'Spotify popup closed before login finished', caps.connected ? 'info' : 'warning');
+      }
+    }, 3000);
+  }
+
+  async function disconnectSpotify() {
+    const payload = await apiFetch('/api/spotify/disconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    state.spotify = payload.spotify || {};
+    renderSpotifyStatus(state.spotify);
+    toast('Spotify disconnected');
+  }
+
+  async function cacheSpotifyUri() {
+    await refreshSpotifyStatus();
+    const caps = spotifyCapabilities(state.spotify || {});
+    if (!caps.ready) {
+      toast(caps.guidance, 'warning');
+      return;
+    }
+
+    const target = ($('spotify-cache-uri').value || '').trim();
+    if (!target) {
+      toast('Spotify URI is required', 'warning');
+      return;
+    }
+    const payload = await apiFetch('/api/spotify/cache', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target }),
+    });
+    if (payload.cached_path) {
+      setSelectedPath(payload.cached_path);
+    }
+    await refreshTree();
+    await loadLibrary();
+    toast(`Cached: ${payload.cached_path || target}`);
+  }
+
   async function saveLedSpeed() {
     const value = Number($('led-speed').value || 25);
     const payload = await apiFetch('/api/settings', {
@@ -1205,6 +1485,8 @@
 
   function bindSettings() {
     const slider = $('led-speed');
+    const spotifyClient = $('spotify-client-id');
+    const spotifyDevice = $('spotify-device-name');
 
     slider.addEventListener('pointerdown', () => {
       state.sliderEditing = true;
@@ -1233,6 +1515,58 @@
         await saveLedSpeed();
       } catch (err) {
         toast(`Save settings failed: ${err.message}`, 'error');
+      }
+    });
+
+    spotifyClient.addEventListener('input', () => {
+      spotifyClient.dataset.autofilled = '0';
+    });
+
+    spotifyDevice.addEventListener('input', () => {
+      spotifyDevice.dataset.autofilled = '0';
+    });
+
+    $('spotify-save-config').addEventListener('click', async () => {
+      try {
+        await saveSpotifyConfig();
+      } catch (err) {
+        toast(`Spotify config failed: ${err.message}`, 'error');
+      }
+    });
+
+    $('spotify-connect').addEventListener('click', async () => {
+      try {
+        const saved = await saveSpotifyConfig();
+        if (!saved) {
+          return;
+        }
+        await connectSpotify();
+      } catch (err) {
+        toast(`Spotify connect failed: ${err.message}`, 'error');
+      }
+    });
+
+    $('spotify-disconnect').addEventListener('click', async () => {
+      try {
+        await disconnectSpotify();
+      } catch (err) {
+        toast(`Spotify disconnect failed: ${err.message}`, 'error');
+      }
+    });
+
+    $('spotify-refresh-status').addEventListener('click', async () => {
+      try {
+        await refreshSpotifyStatus();
+      } catch (err) {
+        toast(`Spotify status failed: ${err.message}`, 'error');
+      }
+    });
+
+    $('spotify-cache-btn').addEventListener('click', async () => {
+      try {
+        await cacheSpotifyUri();
+      } catch (err) {
+        toast(`Spotify cache failed: ${err.message}`, 'error');
       }
     });
   }
@@ -1272,6 +1606,7 @@
 
       const statusPayload = await apiFetch('/api/status');
       applySnapshot(statusPayload);
+      await refreshSpotifyStatus();
       activateTab(state.activeTab, false);
       saveUiPrefs();
     } catch (err) {

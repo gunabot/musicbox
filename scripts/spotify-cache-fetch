@@ -1,0 +1,463 @@
+#!/usr/bin/env python3
+import json
+import os
+import re
+import signal
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+TOKEN_URL = 'https://accounts.spotify.com/api/token'
+API_BASE = 'https://api.spotify.com/v1'
+URI_RE = re.compile(r'^spotify:(track|album|playlist):([A-Za-z0-9]+)$')
+
+
+def fail(message: str, code: int = 1) -> None:
+    print(message, file=sys.stderr)
+    sys.exit(code)
+
+
+def normalize_spotify_uri(value: str) -> str:
+    text = str(value or '').strip()
+    match = URI_RE.match(text)
+    if match:
+        return f"spotify:{match.group(1)}:{match.group(2)}"
+
+    parsed = urllib.parse.urlparse(text)
+    if parsed.scheme not in {'http', 'https'}:
+        fail('Spotify URI/URL is invalid')
+    if parsed.netloc not in {'open.spotify.com', 'www.open.spotify.com'}:
+        fail('Spotify URL must use open.spotify.com')
+    parts = [chunk for chunk in parsed.path.split('/') if chunk]
+    if len(parts) < 2:
+        fail('Spotify URL path is invalid')
+    media_type = parts[0].lower()
+    media_id = parts[1]
+    if media_type not in {'track', 'album', 'playlist'} or not re.fullmatch(r'[A-Za-z0-9]+', media_id):
+        fail('Spotify URL must be track/album/playlist')
+    return f'spotify:{media_type}:{media_id}'
+
+
+def slug(value: str, fallback: str = 'item') -> str:
+    text = re.sub(r'[^A-Za-z0-9._ -]+', '_', str(value or '')).strip()
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip(' .')
+    return text or fallback
+
+
+def http_json(
+    method: str,
+    url: str,
+    *,
+    headers: Dict[str, str] | None = None,
+    json_body: Dict[str, Any] | None = None,
+    form_body: Dict[str, Any] | None = None,
+    timeout: int = 20,
+) -> Tuple[int, Dict[str, Any]]:
+    data = None
+    req_headers = dict(headers or {})
+    if json_body is not None:
+        data = json.dumps(json_body).encode('utf-8')
+        req_headers['Content-Type'] = 'application/json'
+    elif form_body is not None:
+        data = urllib.parse.urlencode(form_body).encode('utf-8')
+        req_headers['Content-Type'] = 'application/x-www-form-urlencoded'
+
+    req = urllib.request.Request(url=url, data=data, method=method.upper(), headers=req_headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode('utf-8', errors='ignore')
+            status = int(resp.status)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode('utf-8', errors='ignore')
+        status = int(exc.code)
+    except Exception as exc:
+        return 599, {'error': str(exc)}
+
+    try:
+        payload = json.loads(body) if body else {}
+    except Exception:
+        payload = {'raw': body}
+    return status, payload if isinstance(payload, dict) else {'raw': payload}
+
+
+class SpotifySession:
+    def __init__(self, oauth_path: Path) -> None:
+        self.oauth_path = oauth_path
+        self.payload = self._load_payload()
+        self.client_id = str(self.payload.get('client_id', '')).strip()
+        self.refresh_token = str(self.payload.get('refresh_token', '')).strip()
+        self.access_token = str(self.payload.get('access_token', '')).strip()
+        self.expires_at = int(self.payload.get('expires_at', 0) or 0)
+        if not self.client_id:
+            fail(f'Spotify client_id missing in {self.oauth_path}')
+        if not self.refresh_token:
+            fail(f'Spotify refresh_token missing in {self.oauth_path}')
+        self.ensure_access_token()
+
+    def _load_payload(self) -> Dict[str, Any]:
+        if not self.oauth_path.exists():
+            fail(f'Spotify OAuth file not found: {self.oauth_path}')
+        try:
+            return json.loads(self.oauth_path.read_text())
+        except Exception as exc:
+            fail(f'Failed to read Spotify OAuth file: {exc}')
+
+    def _save_payload(self) -> None:
+        self.payload['access_token'] = self.access_token
+        self.payload['expires_at'] = self.expires_at
+        if self.refresh_token:
+            self.payload['refresh_token'] = self.refresh_token
+        self.payload['updated_at'] = int(time.time())
+        self.oauth_path.parent.mkdir(parents=True, exist_ok=True)
+        self.oauth_path.write_text(json.dumps(self.payload, indent=2, sort_keys=True))
+
+    def refresh(self) -> None:
+        status, data = http_json(
+            'POST',
+            TOKEN_URL,
+            form_body={
+                'grant_type': 'refresh_token',
+                'refresh_token': self.refresh_token,
+                'client_id': self.client_id,
+            },
+        )
+        if status >= 300:
+            fail(data.get('error_description') or data.get('error') or f'Spotify token refresh failed ({status})')
+
+        token = str(data.get('access_token', '')).strip()
+        if not token:
+            fail('Spotify refresh response missing access_token')
+        expires_in = int(data.get('expires_in', 3600))
+        self.access_token = token
+        self.expires_at = int(time.time()) + max(60, expires_in - 15)
+        maybe_refresh = str(data.get('refresh_token', '')).strip()
+        if maybe_refresh:
+            self.refresh_token = maybe_refresh
+        self._save_payload()
+
+    def ensure_access_token(self) -> str:
+        if self.access_token and self.expires_at > int(time.time()) + 30:
+            return self.access_token
+        self.refresh()
+        return self.access_token
+
+    def request(
+        self,
+        method: str,
+        path_or_url: str,
+        *,
+        params: Dict[str, Any] | None = None,
+        json_body: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        url = path_or_url if path_or_url.startswith('http') else f'{API_BASE}{path_or_url}'
+        if params:
+            query = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None}, doseq=True)
+            url = f'{url}?{query}'
+
+        token = self.ensure_access_token()
+        headers = {'Authorization': f'Bearer {token}'}
+        status, data = http_json(method, url, headers=headers, json_body=json_body)
+        if status == 401:
+            self.refresh()
+            headers['Authorization'] = f'Bearer {self.access_token}'
+            status, data = http_json(method, url, headers=headers, json_body=json_body)
+        if status >= 300:
+            message = data.get('error_description') or data.get('error', {}).get('message') or data.get('error')
+            fail(message or f'Spotify API call failed ({status} {method} {url})')
+        return data
+
+
+def parse_track(item: Dict[str, Any]) -> Dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    track_id = str(item.get('id', '')).strip()
+    track_uri = str(item.get('uri', '')).strip()
+    name = str(item.get('name', '')).strip()
+    duration_ms = int(item.get('duration_ms', 0) or 0)
+    if not track_id or not track_uri or not name or duration_ms <= 0:
+        return None
+    artists = []
+    for raw in item.get('artists', []) or []:
+        artist_name = str((raw or {}).get('name', '')).strip()
+        if artist_name:
+            artists.append(artist_name)
+    return {
+        'id': track_id,
+        'uri': track_uri,
+        'name': name,
+        'artists': artists,
+        'duration_ms': duration_ms,
+    }
+
+
+def resolve_tracks(session: SpotifySession, spotify_uri: str) -> Tuple[str, str, List[Dict[str, Any]]]:
+    media_type, media_id = spotify_uri.split(':', 2)[1:]
+    tracks: List[Dict[str, Any]] = []
+
+    if media_type == 'track':
+        track = parse_track(session.request('GET', f'/tracks/{media_id}'))
+        if not track:
+            fail(f'Could not resolve track metadata for {spotify_uri}')
+        tracks.append(track)
+        return media_type, track['name'], tracks
+
+    if media_type == 'album':
+        album = session.request('GET', f'/albums/{media_id}')
+        title = str(album.get('name', '')).strip() or media_id
+        next_url = f'{API_BASE}/albums/{media_id}/tracks?limit=50'
+        while next_url:
+            page = session.request('GET', next_url)
+            for item in page.get('items', []) or []:
+                track = parse_track(item)
+                if track:
+                    tracks.append(track)
+            next_url = str(page.get('next', '') or '')
+        return media_type, title, tracks
+
+    if media_type == 'playlist':
+        playlist = session.request('GET', f'/playlists/{media_id}', params={'fields': 'name'})
+        title = str(playlist.get('name', '')).strip() or media_id
+        next_url = f'{API_BASE}/playlists/{media_id}/tracks?limit=100'
+        while next_url:
+            page = session.request('GET', next_url)
+            for wrapped in page.get('items', []) or []:
+                track_obj = wrapped.get('track') if isinstance(wrapped, dict) else None
+                track = parse_track(track_obj or {})
+                if track:
+                    tracks.append(track)
+            next_url = str(page.get('next', '') or '')
+        return media_type, title, tracks
+
+    fail(f'Unsupported spotify type: {media_type}')
+    return media_type, media_id, tracks
+
+
+def ensure_fifo(path: Path) -> None:
+    if path.exists():
+        if path.is_fifo():
+            return
+        path.unlink()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(path, mode=0o666)
+
+
+def find_librespot_binary() -> str:
+    env_value = str(os.environ.get('MUSICBOX_LIBRESPOT_BIN', '')).strip()
+    if env_value:
+        candidate = Path(env_value).expanduser()
+        if candidate.exists():
+            return str(candidate)
+
+    found = shutil.which('librespot')
+    if found:
+        return found
+
+    home_candidate = Path.home() / '.cargo' / 'bin' / 'librespot'
+    if home_candidate.exists():
+        return str(home_candidate)
+
+    fail('librespot binary not found. Install with `cargo install --locked librespot --version 0.8.0`.')
+    return 'librespot'
+
+
+def wait_for_device_id(session: SpotifySession, device_name: str, timeout_s: int = 30) -> str:
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        payload = session.request('GET', '/me/player/devices')
+        for device in payload.get('devices', []) or []:
+            if str(device.get('name', '')).strip() == device_name:
+                device_id = str(device.get('id', '')).strip()
+                if device_id:
+                    return device_id
+        time.sleep(1.0)
+    fail(f'Spotify device "{device_name}" did not appear')
+    return ''
+
+
+def start_librespot(
+    access_token: str,
+    device_name: str,
+    fifo_path: Path,
+    work_dir: Path,
+    librespot_bin: str,
+) -> subprocess.Popen[str]:
+    log_path = work_dir / 'librespot-capture.log'
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_handle = open(log_path, 'a', encoding='utf-8')
+    cmd = [
+        librespot_bin,
+        '--name',
+        device_name,
+        '--backend',
+        'pipe',
+        '--device',
+        str(fifo_path),
+        '--format',
+        'S16',
+        '--bitrate',
+        '320',
+        '--initial-volume',
+        '100',
+        '--volume-ctrl',
+        'fixed',
+        '--disable-audio-cache',
+        '--access-token',
+        access_token,
+    ]
+    return subprocess.Popen(cmd, stdout=log_handle, stderr=log_handle, start_new_session=True, text=True)
+
+
+def start_capture(fifo_path: Path, out_path: Path, duration_s: float) -> subprocess.Popen[str]:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        'ffmpeg',
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-nostdin',
+        '-y',
+        '-f',
+        's16le',
+        '-ar',
+        '44100',
+        '-ac',
+        '2',
+        '-i',
+        str(fifo_path),
+        '-t',
+        f'{duration_s:.3f}',
+        str(out_path),
+    ]
+    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+
+
+def capture_tracks(
+    session: SpotifySession,
+    tracks: List[Dict[str, Any]],
+    out_dir: Path,
+    device_name: str,
+    librespot_bin: str,
+    rel_result_for_single: bool,
+) -> Path:
+    fifo_path = Path('/tmp/musicbox-librespot-capture.pcm')
+    ensure_fifo(fifo_path)
+
+    librespot = start_librespot(
+        session.ensure_access_token(),
+        device_name,
+        fifo_path,
+        Path('/tmp'),
+        librespot_bin,
+    )
+    try:
+        device_id = wait_for_device_id(session, device_name=device_name, timeout_s=35)
+        session.request('PUT', '/me/player', json_body={'device_ids': [device_id], 'play': False})
+        time.sleep(0.5)
+
+        for index, track in enumerate(tracks, start=1):
+            base_name = slug(f"{', '.join(track['artists'][:2]) or 'Unknown'} - {track['name']}")
+            filename = f'{index:02d} - {base_name}.flac' if len(tracks) > 1 else f'{base_name}.flac'
+            out_path = out_dir / filename
+
+            if out_path.exists() and out_path.stat().st_size > 20000:
+                continue
+
+            capture_s = max(1.5, (float(track['duration_ms']) / 1000.0) + 0.8)
+            ffmpeg = start_capture(fifo_path, out_path, capture_s)
+            time.sleep(0.3)
+            session.request('PUT', '/me/player/play', params={'device_id': device_id}, json_body={'uris': [track['uri']]})
+
+            timeout_s = capture_s + 20.0
+            try:
+                _, ffmpeg_stderr = ffmpeg.communicate(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                ffmpeg.kill()
+                _, ffmpeg_stderr = ffmpeg.communicate(timeout=2)
+                fail(f'Capture timeout for {track["uri"]}: {ffmpeg_stderr or "ffmpeg timeout"}')
+
+            session.request('PUT', '/me/player/pause', params={'device_id': device_id})
+            if ffmpeg.returncode != 0:
+                fail(f'ffmpeg failed for {track["uri"]}: {ffmpeg_stderr or "unknown ffmpeg error"}')
+            if not out_path.exists() or out_path.stat().st_size < 20000:
+                fail(f'Capture produced invalid file for {track["uri"]}: {out_path}')
+            time.sleep(0.3)
+    finally:
+        if librespot.poll() is None:
+            librespot.send_signal(signal.SIGTERM)
+            try:
+                librespot.wait(timeout=5)
+            except Exception:
+                librespot.kill()
+        try:
+            if fifo_path.exists() and fifo_path.is_fifo():
+                fifo_path.unlink()
+        except Exception:
+            pass
+
+    if len(tracks) == 1 and rel_result_for_single:
+        only = next((item for item in out_dir.iterdir() if item.is_file()), None)
+        if only is not None:
+            return only
+    return out_dir
+
+
+def to_relative(path: Path, media_dir: Path) -> str:
+    abs_path = path.resolve()
+    media_root = media_dir.resolve()
+    try:
+        return str(abs_path.relative_to(media_root))
+    except Exception:
+        return str(abs_path)
+
+
+def main() -> None:
+    if len(sys.argv) < 4:
+        fail('usage: spotify-cache-fetch <spotify-uri> <cache-dir> <media-dir>', code=2)
+
+    spotify_uri = normalize_spotify_uri(sys.argv[1])
+    cache_dir = Path(sys.argv[2]).resolve()
+    media_dir = Path(sys.argv[3]).resolve()
+    oauth_path = Path(os.environ.get('MUSICBOX_SPOTIFY_OAUTH_PATH', '/home/musicbox/musicbox/config/spotify_oauth.json')).resolve()
+    device_name = str(os.environ.get('MUSICBOX_SPOTIFY_DEVICE_NAME', '')).strip() or 'musicbox-capture'
+    librespot_bin = find_librespot_binary()
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    session = SpotifySession(oauth_path)
+
+    media_type, title, tracks = resolve_tracks(session, spotify_uri)
+    if not tracks:
+        fail(f'No tracks resolved for {spotify_uri}')
+
+    slug_root = slug(f'{media_type}_{title}', fallback=f'{media_type}')
+    target_dir = cache_dir / slug_root
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Fast path if already cached.
+    existing_audio = sorted(target_dir.glob('*.flac'))
+    if len(tracks) == 1 and len(existing_audio) >= 1 and existing_audio[0].stat().st_size > 20000:
+        print(to_relative(existing_audio[0], media_dir))
+        return
+    if len(tracks) > 1 and len(existing_audio) >= len(tracks):
+        print(to_relative(target_dir, media_dir))
+        return
+
+    result_path = capture_tracks(
+        session=session,
+        tracks=tracks,
+        out_dir=target_dir,
+        device_name=device_name,
+        librespot_bin=librespot_bin,
+        rel_result_for_single=True,
+    )
+    print(to_relative(result_path, media_dir))
+
+
+if __name__ == '__main__':
+    main()

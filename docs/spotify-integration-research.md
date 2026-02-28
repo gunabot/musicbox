@@ -32,12 +32,13 @@ Map RFID cards to Spotify content (playlist/album/track) with reliable playback 
 
 ## Device handling
 - Discover active Spotify devices via API.
-- Prefer dedicated target device name (e.g. `musicbox`).
+- Prefer dedicated target device name (e.g. `musicbox-capture` for cache jobs).
 - If missing, show explicit UI error and fallback to local behavior.
 
 ## Libraries/options
 - `spotipy` (fastest path, mature)
 - direct requests against Spotify Web API (less dependency)
+- `librespot` pipe backend for first-play capture into local FLAC
 
 ## Risks / constraints
 - Spotify Premium required for full device playback control.
@@ -55,3 +56,31 @@ Map RFID cards to Spotify content (playlist/album/track) with reliable playback 
 - Playlist + album URIs first.
 - Track URIs supported second.
 - No search UX initially; user pastes Spotify URI.
+
+## Implementation update (2026-02-28)
+- App now supports typed mappings in `config/card_mappings.json`:
+  - `{"type": "local", "target": "relative/path/in/media"}`
+  - `{"type": "spotify", "target": "spotify:playlist:..."}`
+- Legacy string mappings still load and are treated as `local`.
+- RFID flow now routes `spotify` mappings through a cache resolver, then plays cached audio with MPV.
+- Web UI now supports:
+  - choosing mapping type (`local` or `spotify`)
+  - Spotify OAuth configuration and login
+  - prefetching Spotify URI into cache
+  - viewing Spotify auth/device status
+
+## Cache-resolver model (current code)
+- Spotify playback is implemented as **cache-first**:
+  1. scan card mapped to Spotify URI
+  2. resolve URI in local cache index (`config/spotify_cache_index.json`)
+  3. on miss, run fetch command (`MUSICBOX_SPOTIFY_FETCH_COMMAND`)
+  4. fetch command performs Web API track resolution + librespot pipe capture + ffmpeg encode
+  5. fetch command outputs local media path
+  6. MPV plays that local path
+- Default fetch command is `scripts/spotify-cache-fetch` (librespot-based).
+- This keeps playback controls unified because everything goes through MPV after cache resolution.
+
+## Notes
+- Spotify Premium is required for playback transfer/control.
+- OAuth scope must include `streaming` for librespot access-token auth.
+- You can swap `MUSICBOX_SPOTIFY_FETCH_COMMAND` to a custom resolver/capture script without changing app code.

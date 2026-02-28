@@ -21,12 +21,19 @@
 - `docs/overlayfs-runbook.md`
 
 ## Spotify integration status
-- No dedicated Spotify research report file is currently in `docs/`.
-- Not implemented yet in app.
+- `docs/spotify-integration-research.md` present.
+- Initial Spotify integration implemented:
+  - typed card mappings (`local` / `spotify`)
+  - RFID routing for Spotify mappings
+  - cache-resolver backend (`config/spotify_cache_index.json`)
+  - default fetch script `scripts/spotify-cache-fetch` (librespot capture)
+  - UI supports mapping type selection and Spotify-target playback
+  - UI Spotify OAuth config/connect/status/caching controls
+- Added setup/runbook: `docs/spotify-cache-setup.md`
 
 ## Next roadmap items
-1. Add `docs/spotify-integration-research.md` (OAuth flow, device auth, card->playlist mapping options)
-2. Implement Spotify auth + playback bridge
+1. Validate first full playlist capture on-device and tune track timing gaps
+2. Optional: background prefetch queue (capture while first cached track plays)
 3. Add low-battery warning + graceful shutdown policy
 4. E-ink status integration
 5. Finalize power UX (ATXRaspi path)

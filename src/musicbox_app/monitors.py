@@ -345,14 +345,24 @@ def _rfid_worker(store: AppStore, player: PlayerManager) -> None:
                     store.add_event(f'CARD {card}')
 
                     mappings = store.load_mappings()
-                    mapped_target = mappings.get(card)
-                    if not mapped_target:
+                    mapped = mappings.get(card)
+                    if not mapped:
                         store.add_event(f'CARD_UNMAPPED {card}')
                         continue
 
                     try:
-                        player.play(mapped_target)
-                        store.add_event(f'CARD_MAPPED {card} -> {mapped_target}')
+                        mapped_type = str(mapped.get('type', 'local')).strip().lower() or 'local'
+                        mapped_target = str(mapped.get('target', '')).strip()
+                        if not mapped_target:
+                            store.add_event(f'CARD_MAPPED_ERR {card}: empty target', level='error')
+                            continue
+
+                        if mapped_type == 'spotify':
+                            cached = player.play_spotify(mapped_target)
+                            store.add_event(f'CARD_MAPPED {card} -> spotify:{mapped_target} ({cached})')
+                        else:
+                            player.play(mapped_target)
+                            store.add_event(f'CARD_MAPPED {card} -> {mapped_target}')
                     except Exception as exc:
                         store.add_event(f'CARD_MAPPED_ERR {card}: {exc}', level='error')
                     continue

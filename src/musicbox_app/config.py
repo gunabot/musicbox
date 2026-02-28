@@ -5,6 +5,24 @@ BASE_DIR = Path(os.environ.get('MUSICBOX_BASE_DIR', '/home/musicbox/musicbox')).
 MEDIA_DIR = Path(os.environ.get('MUSICBOX_MEDIA_DIR', '/home/musicbox/media')).resolve()
 CONFIG_DIR = Path(os.environ.get('MUSICBOX_CONFIG_DIR', str(BASE_DIR / 'config'))).resolve()
 LOG_DIR = Path(os.environ.get('MUSICBOX_LOG_DIR', str(BASE_DIR / 'logs'))).resolve()
+SPOTIFY_CACHE_DIR = Path(os.environ.get('MUSICBOX_SPOTIFY_CACHE_DIR', str(MEDIA_DIR / '_spotify_cache'))).resolve()
+SPOTIFY_CACHE_INDEX_PATH = Path(
+    os.environ.get('MUSICBOX_SPOTIFY_CACHE_INDEX_PATH', str(CONFIG_DIR / 'spotify_cache_index.json'))
+).resolve()
+SPOTIFY_OAUTH_PATH = Path(os.environ.get('MUSICBOX_SPOTIFY_OAUTH_PATH', str(CONFIG_DIR / 'spotify_oauth.json'))).resolve()
+SPOTIFY_FETCH_COMMAND = os.environ.get(
+    'MUSICBOX_SPOTIFY_FETCH_COMMAND',
+    str(BASE_DIR / 'scripts' / 'spotify-cache-fetch'),
+).strip()
+SPOTIFY_CAPTURE_DEVICE_NAME = os.environ.get('MUSICBOX_SPOTIFY_CAPTURE_DEVICE_NAME', 'musicbox-capture').strip() or 'musicbox-capture'
+SPOTIFY_SCOPE = (
+    'user-read-private '
+    'user-read-email '
+    'user-read-playback-state '
+    'user-modify-playback-state '
+    'user-read-currently-playing '
+    'streaming'
+)
 
 MAPPINGS_PATH = CONFIG_DIR / 'card_mappings.json'
 SETTINGS_PATH = CONFIG_DIR / 'settings.json'

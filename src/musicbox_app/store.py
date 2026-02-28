@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .config import DEFAULT_SETTINGS, EVENTS_MAX, MAPPINGS_PATH, SETTINGS_PATH
+from .mappings import normalize_mappings_payload
 
 
 class AppStore:
@@ -21,7 +22,7 @@ class AppStore:
             'rotary_last': '-',
             'rotary_pos': 0,
             'last_card': None,
-            'player': {'status': 'stopped', 'file': None, 'volume': 50},
+            'player': {'status': 'stopped', 'source': 'local', 'file': None, 'spotify_uri': None, 'volume': 50},
             'settings': copy.deepcopy(self._settings),
             'health': {
                 'seesaw': False,
@@ -72,15 +73,12 @@ class AppStore:
         with self.lock:
             self._write_json(SETTINGS_PATH, self.state['settings'])
 
-    def load_mappings(self) -> Dict[str, str]:
+    def load_mappings(self) -> Dict[str, Dict[str, str]]:
         raw = self._load_json(MAPPINGS_PATH)
-        mappings: Dict[str, str] = {}
-        for key, value in raw.items():
-            mappings[str(key)] = str(value)
-        return mappings
+        return normalize_mappings_payload(raw)
 
-    def save_mappings(self, mappings: Dict[str, str]) -> None:
-        self._write_json(MAPPINGS_PATH, mappings)
+    def save_mappings(self, mappings: Dict[str, Any]) -> None:
+        self._write_json(MAPPINGS_PATH, normalize_mappings_payload(mappings))
 
     def _new_event(self, message: str, level: str = 'info') -> Dict[str, Any]:
         self._event_id += 1

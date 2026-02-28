@@ -35,6 +35,8 @@
       <div class="card">
         <h2>Now Playing</h2>
         <p id="now-file" class="mono">No active track</p>
+        <p id="now-source">Source: local</p>
+        <p id="now-spotify-uri" class="mono">-</p>
         <p id="now-volume">Volume: --</p>
         <div class="control-grid">
           <button class="primary" data-action="playpause">Play/Pause</button>
@@ -137,7 +139,11 @@
         <h2>Card Mapping</h2>
         <div class="toolbar">
           <input id="map-card" placeholder="Card ID (auto-filled on scan)">
-          <input id="map-target" placeholder="target file/folder under /media">
+          <select id="map-type">
+            <option value="local">Local file/folder</option>
+            <option value="spotify">Spotify URI or URL</option>
+          </select>
+          <input id="map-target" placeholder="local path or spotify:playlist:...">
           <button id="map-save">Save Mapping</button>
           <button id="map-delete" class="danger">Delete Mapping</button>
         </div>
@@ -152,6 +158,7 @@
           <thead>
             <tr>
               <th>Card</th>
+              <th>Type</th>
               <th>Target</th>
               <th>Actions</th>
             </tr>
@@ -195,6 +202,34 @@
           <strong id="led-speed-value">25</strong>
           <span id="led-speed-dirty" class="muted"></span>
           <button id="save-settings">Save</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Spotify</h2>
+        <p id="spotify-guidance" class="muted">Set client ID, connect Spotify, then first play captures locally for offline replay.</p>
+        <div class="toolbar">
+          <input id="spotify-client-id" placeholder="Spotify app client id">
+          <input id="spotify-device-name" placeholder="Capture device name">
+          <button id="spotify-save-config">Save Spotify Config</button>
+        </div>
+        <div class="toolbar">
+          <button id="spotify-connect" class="primary">Connect Spotify</button>
+          <button id="spotify-disconnect" class="danger">Disconnect</button>
+          <button id="spotify-refresh-status">Refresh Status</button>
+        </div>
+        <div class="kv"><span>Status</span><strong id="spotify-status">-</strong></div>
+        <div class="kv"><span>User</span><strong id="spotify-user">-</strong></div>
+        <div class="kv"><span>Premium</span><strong id="spotify-product">-</strong></div>
+        <div class="kv"><span>Device</span><strong id="spotify-device">-</strong></div>
+        <div class="kv"><span>Token Expiry</span><strong id="spotify-expiry">-</strong></div>
+        <div class="kv"><span>Streaming Scope</span><strong id="spotify-streaming">-</strong></div>
+        <div class="kv"><span>Scopes</span><strong id="spotify-scope">-</strong></div>
+
+        <h3>Prefetch Spotify URI</h3>
+        <div class="toolbar">
+          <input id="spotify-cache-uri" placeholder="spotify:playlist:... or https://open.spotify.com/...">
+          <button id="spotify-cache-btn">Cache Now</button>
         </div>
       </div>
     </section>
