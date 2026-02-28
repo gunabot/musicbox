@@ -1,8 +1,11 @@
+import os
 from pathlib import Path
 
-BASE_DIR = Path('/home/musicbox/musicbox')
-MEDIA_DIR = Path('/home/musicbox/media')
-CONFIG_DIR = BASE_DIR / 'config'
+BASE_DIR = Path(os.environ.get('MUSICBOX_BASE_DIR', '/home/musicbox/musicbox')).resolve()
+MEDIA_DIR = Path(os.environ.get('MUSICBOX_MEDIA_DIR', '/home/musicbox/media')).resolve()
+CONFIG_DIR = Path(os.environ.get('MUSICBOX_CONFIG_DIR', str(BASE_DIR / 'config'))).resolve()
+LOG_DIR = Path(os.environ.get('MUSICBOX_LOG_DIR', str(BASE_DIR / 'logs'))).resolve()
+
 MAPPINGS_PATH = CONFIG_DIR / 'card_mappings.json'
 SETTINGS_PATH = CONFIG_DIR / 'settings.json'
 

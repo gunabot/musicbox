@@ -3,10 +3,9 @@ import os
 import socket
 import subprocess
 import threading
-from pathlib import Path
 from typing import Any, Dict
 
-from .config import AUDIO_DEVICE, MPV_SOCKET, PLAYLIST_PATH
+from .config import AUDIO_DEVICE, MEDIA_DIR, MPV_SOCKET, PLAYLIST_PATH
 from .media import list_audio_files_recursive, safe_rel_to_abs
 from .store import AppStore
 
@@ -89,7 +88,7 @@ class PlayerManager:
                     str(target),
                 ]
 
-            self._spawn(args, str(target.relative_to(Path('/home/musicbox/media'))))
+            self._spawn(args, str(target.relative_to(MEDIA_DIR)))
             self.store.add_event(f'PLAY {relpath}')
 
     def play_pause(self) -> bool:
