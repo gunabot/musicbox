@@ -257,9 +257,9 @@ def play_file(relpath):
             raise FileNotFoundError('no audio files in folder')
         playlist = Path('/tmp/musicbox-playlist.m3u')
         playlist.write_text('\n'.join(str(p) for p in files) + '\n')
-        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--playlist', str(playlist)])
+        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--audio-device=alsa/plughw:1,0', '--playlist', str(playlist)])
     else:
-        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', str(target)])
+        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--audio-device=alsa/plughw:1,0', str(target)])
 
     with lock:
         state['player'] = {'status': 'playing', 'file': str(target.relative_to(MEDIA_DIR))}
@@ -270,6 +270,8 @@ def player_watchdog():
     global player_proc
     while True:
         if player_proc and player_proc.poll() is not None:
+            rc = player_proc.returncode
+            add_event(f'PLAYER_EXIT rc={rc}')
             with lock:
                 state['player'] = {'status': 'stopped', 'file': None}
             player_proc = None
@@ -448,7 +450,11 @@ small{color:#9ca3af}
 <div class='row'>
   <input id='pickFiles' type='file' multiple>
   <input id='pickFolder' type='file' webkitdirectory directory multiple>
-  <button onclick='uploadPicked()'>upload selected</button>
+  <button id='uploadBtn' onclick='uploadPicked()'>upload selected</button>
+</div>
+<div class='row'>
+  <progress id='uploadProgress' value='0' max='100' style='width:320px;display:none'></progress>
+  <span id='uploadStatus' class='off'>idle</span>
 </div>
 <small>Folder uploads preserve relative paths when browser supports it.</small>
 
@@ -528,21 +534,70 @@ async function deleteMapping(){
   await reloadMappings();
 }
 
-async function uploadFiles(files){
-  if(!files.length){ alert('No files selected'); return; }
-  const dir = document.getElementById('targetDir').value.trim();
-  const fd = new FormData();
-  fd.append('dir', dir);
-  for(const f of files){
-    if(!f || !f.name) continue;
-    fd.append('files', f, f.name);
-    fd.append('relpath', f.webkitRelativePath || f.name);
+function setUploadUI(state, text, pct){
+  const b=document.getElementById('uploadBtn');
+  const p=document.getElementById('uploadProgress');
+  const s=document.getElementById('uploadStatus');
+  if(state==='idle'){
+    b.disabled=false; b.textContent='upload selected';
+    p.style.display='none'; p.value=0;
+    s.textContent=text||'idle'; s.className='off';
+    return;
   }
-  const res = await fetch('/api/upload',{method:'POST', body:fd});
-  const j = await res.json();
-  if(!j.ok){ alert('Upload failed: '+(j.error||'unknown')); }
-  else { alert(`Uploaded ${j.saved?.length||0} file(s)`); }
-  await reloadFiles();
+  b.disabled=true; b.textContent='uploading...';
+  p.style.display='inline-block';
+  if(typeof pct==='number') p.value=pct;
+  s.textContent=text||'uploading'; s.className='on';
+}
+
+function uploadFiles(files){
+  return new Promise(async (resolve)=>{
+    if(!files.length){ alert('No files selected'); return resolve(); }
+    const dir = document.getElementById('targetDir').value.trim();
+    const fd = new FormData();
+    fd.append('dir', dir);
+    let count=0;
+    for(const f of files){
+      if(!f || !f.name) continue;
+      fd.append('files', f, f.name);
+      fd.append('relpath', f.webkitRelativePath || f.name);
+      count++;
+    }
+    if(!count){ alert('No valid files selected'); return resolve(); }
+
+    setUploadUI('busy', `Starting upload (${count} file(s))...`, 0);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST','/api/upload', true);
+    xhr.upload.onprogress = (e)=>{
+      if(e.lengthComputable){
+        const pct=Math.round((e.loaded/e.total)*100);
+        setUploadUI('busy', `Uploading... ${pct}%`, pct);
+      } else {
+        setUploadUI('busy', 'Uploading...', undefined);
+      }
+    };
+    xhr.onload = async ()=>{
+      let j={ok:false,error:'invalid response'};
+      try{ j=JSON.parse(xhr.responseText||'{}'); }catch{}
+      if(xhr.status>=200 && xhr.status<300 && j.ok){
+        setUploadUI('busy', `Uploaded ${j.saved?.length||0} file(s)`, 100);
+      } else {
+        setUploadUI('busy', `Upload failed: ${j.error||xhr.statusText||'unknown'}`, 0);
+        alert('Upload failed: '+(j.error||xhr.statusText||'unknown'));
+      }
+      await reloadFiles();
+      setTimeout(()=>setUploadUI('idle','idle',0),1200);
+      resolve();
+    };
+    xhr.onerror = ()=>{
+      setUploadUI('busy','Upload failed: network error',0);
+      alert('Upload failed: network error');
+      setTimeout(()=>setUploadUI('idle','idle',0),1200);
+      resolve();
+    };
+    xhr.send(fd);
+  });
 }
 
 async function uploadPicked(){
