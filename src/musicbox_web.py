@@ -38,6 +38,7 @@ state = {
     'events': deque(maxlen=200),
     'last_card': None,
     'player': {'status': 'stopped', 'file': None},
+    'settings': {'rotary_led_step_ms': 25},
 }
 lock = threading.Lock()
 player_proc = None
@@ -106,10 +107,13 @@ def monitor_inputs():
 
     def rotary_led_sweep(direction, btn_state):
         try:
+            with lock:
+                step_ms = int(state.get('settings', {}).get('rotary_led_step_ms', 25))
+            step_s = max(0.005, min(0.25, step_ms / 1000.0))
             order = LED_PINS if direction == 'CW' else list(reversed(LED_PINS))
             for lp in order:
                 ss.digital_write(lp, True)
-                time.sleep(0.025)
+                time.sleep(step_s)
                 ss.digital_write(lp, False)
             # restore press LEDs after sweep
             for i, lp in enumerate(LED_PINS):
@@ -386,6 +390,7 @@ def api_status():
             'rotary_pos': state['rotary_pos'],
             'last_card': state['last_card'],
             'player': state['player'],
+            'settings': state['settings'],
             'events': list(state['events']),
         })
 
@@ -430,6 +435,22 @@ def api_player_action():
     elif action == 'voldown':
         ok = player_volume(-5)
     return jsonify({'ok': ok, 'action': action})
+
+
+@app.post('/api/settings')
+def api_settings_set():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        if 'rotary_led_step_ms' in data:
+            v = int(data['rotary_led_step_ms'])
+            v = max(5, min(250, v))
+            with lock:
+                state['settings']['rotary_led_step_ms'] = v
+            add_event(f'SET rotary_led_step_ms={v}')
+        with lock:
+            return jsonify({'ok': True, 'settings': state['settings']})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
 
 
 @app.post('/api/mkdir')
@@ -564,6 +585,12 @@ small{color:#9ca3af}
   <button onclick="playerAction('voldown')">vol -</button>
   <button onclick="playerAction('volup')">vol +</button>
 </div>
+<div class='row' style='margin-top:6px'>
+  <label>rotary LED speed (ms/step):</label>
+  <input id='ledSpeed' type='range' min='5' max='120' step='1' value='25' oninput="document.getElementById('ledSpeedVal').textContent=this.value">
+  <span id='ledSpeedVal'>25</span>
+  <button onclick='saveSettings()'>save</button>
+</div>
 
 <h3>File manager</h3>
 <div class='row'>
@@ -638,6 +665,10 @@ async function reloadFiles(){
 async function play(f){ await api('/api/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:f})}); }
 async function stopPlay(){ await api('/api/stop',{method:'POST'}); }
 async function playerAction(action){ await api('/api/player/action',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})}); }
+async function saveSettings(){
+  const ms=parseInt(document.getElementById('ledSpeed').value,10);
+  await api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rotary_led_step_ms:ms})});
+}
 async function delPath(p){ if(!confirm('Delete '+p+' ?')) return; await api('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})}); await reloadFiles(); }
 async function mkDir(){ const p=document.getElementById('targetDir').value.trim(); if(!p) return; await api('/api/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})}); await reloadFiles(); }
 
@@ -747,6 +778,11 @@ async function tick(){
   const sw=document.getElementById('sw');const on=s.rotary_sw===1;sw.textContent=on?'PRESSED':'released';sw.className=on?'on':'off';
   document.getElementById('card').textContent=s.last_card||'-';
   if (s.last_card && !document.getElementById('mapCard').value) document.getElementById('mapCard').value = s.last_card;
+  if (s.settings && s.settings.rotary_led_step_ms){
+    const el=document.getElementById('ledSpeed');
+    const val=String(s.settings.rotary_led_step_ms);
+    if(el && el.value!==val){ el.value=val; document.getElementById('ledSpeedVal').textContent=val; }
+  }
   document.getElementById('player').textContent=(s.player.status||'stopped')+(s.player.file?(' '+s.player.file):'');
   document.getElementById('events').textContent=s.events.join('\\n');
 }
