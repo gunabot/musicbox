@@ -104,6 +104,19 @@ def monitor_inputs():
         (0, 2): -1, (2, 3): -1, (3, 1): -1, (1, 0): -1,
     }
 
+    def rotary_led_sweep(direction, btn_state):
+        try:
+            order = LED_PINS if direction == 'CW' else list(reversed(LED_PINS))
+            for lp in order:
+                ss.digital_write(lp, True)
+                time.sleep(0.025)
+                ss.digital_write(lp, False)
+            # restore press LEDs after sweep
+            for i, lp in enumerate(LED_PINS):
+                ss.digital_write(lp, btn_state[i] == 1)
+        except Exception:
+            pass
+
     last_btn = read_buttons()
     last_sw = GPIO.input(ROT_SW)
     last_state = rot_state()
@@ -144,6 +157,7 @@ def monitor_inputs():
                     state['rotary_pos'] -= 1
                 add_event('ROTARY CCW')
                 player_volume(-3)
+                rotary_led_sweep('CCW', btn)
                 accum = 0
             elif accum <= -4:
                 with lock:
@@ -151,6 +165,7 @@ def monitor_inputs():
                     state['rotary_pos'] += 1
                 add_event('ROTARY CW')
                 player_volume(+3)
+                rotary_led_sweep('CW', btn)
                 accum = 0
 
         sw = GPIO.input(ROT_SW)
