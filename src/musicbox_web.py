@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import shutil
 import threading
 import time
 import subprocess
@@ -27,7 +28,7 @@ state = {
     'rotary_sw': 0,
     'rotary_last': '-',
     'rotary_pos': 0,
-    'events': deque(maxlen=120),
+    'events': deque(maxlen=200),
     'last_card': None,
     'player': {'status': 'stopped', 'file': None},
 }
@@ -44,6 +45,14 @@ def ts():
 def add_event(msg):
     with lock:
         state['events'].appendleft(f"[{ts()}] {msg}")
+
+
+def safe_rel_to_abs(relpath: str) -> Path:
+    relpath = (relpath or '').strip().lstrip('/')
+    p = (MEDIA_DIR / relpath).resolve()
+    if not str(p).startswith(str(MEDIA_DIR.resolve())):
+        raise ValueError('invalid path')
+    return p
 
 
 def monitor_inputs():
@@ -139,7 +148,7 @@ def monitor_rfid():
             for ev in dev.read_loop():
                 if ev.type != ecodes.EV_KEY:
                     continue
-                if ev.value != 1:  # key down only
+                if ev.value != 1:
                     continue
                 if ev.code == ecodes.KEY_ENTER:
                     if buf:
@@ -156,7 +165,7 @@ def monitor_rfid():
             time.sleep(1)
 
 
-def media_list():
+def media_files():
     exts = {'.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac'}
     files = []
     for p in MEDIA_DIR.rglob('*'):
@@ -164,6 +173,16 @@ def media_list():
             files.append(str(p.relative_to(MEDIA_DIR)))
     files.sort()
     return files
+
+
+def media_tree(base: Path = MEDIA_DIR):
+    node = {'name': base.name, 'path': str(base.relative_to(MEDIA_DIR)) if base != MEDIA_DIR else '', 'type': 'dir', 'children': []}
+    for child in sorted(base.iterdir(), key=lambda p: (p.is_file(), p.name.lower())):
+        if child.is_dir():
+            node['children'].append(media_tree(child))
+        else:
+            node['children'].append({'name': child.name, 'path': str(child.relative_to(MEDIA_DIR)), 'type': 'file'})
+    return node
 
 
 def stop_player():
@@ -181,16 +200,13 @@ def stop_player():
 
 def play_file(relpath):
     global player_proc
-    target = (MEDIA_DIR / relpath).resolve()
-    if not str(target).startswith(str(MEDIA_DIR.resolve())):
-        raise ValueError('invalid path')
-    if not target.exists():
+    target = safe_rel_to_abs(relpath)
+    if not target.exists() or not target.is_file():
         raise FileNotFoundError(relpath)
     stop_player()
-    cmd = ['mpv', '--no-video', '--really-quiet', str(target)]
-    player_proc = subprocess.Popen(cmd)
+    player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', str(target)])
     with lock:
-        state['player'] = {'status': 'playing', 'file': relpath}
+        state['player'] = {'status': 'playing', 'file': str(target.relative_to(MEDIA_DIR))}
     add_event(f'PLAY {relpath}')
 
 
@@ -220,15 +236,14 @@ def api_status():
 
 @app.get('/api/files')
 def api_files():
-    return jsonify({'media_dir': str(MEDIA_DIR), 'files': media_list()})
+    return jsonify({'media_dir': str(MEDIA_DIR), 'files': media_files(), 'tree': media_tree()})
 
 
 @app.post('/api/play')
 def api_play():
     data = request.get_json(force=True, silent=True) or {}
-    relpath = data.get('file', '')
     try:
-        play_file(relpath)
+        play_file(data.get('file', ''))
         return jsonify({'ok': True})
     except Exception as e:
         return jsonify({'ok': False, 'error': str(e)}), 400
@@ -241,27 +256,164 @@ def api_stop():
     return jsonify({'ok': True})
 
 
+@app.post('/api/mkdir')
+def api_mkdir():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        p = safe_rel_to_abs(data.get('path', ''))
+        p.mkdir(parents=True, exist_ok=True)
+        add_event(f'MKDIR {p.relative_to(MEDIA_DIR)}')
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
+
+
+@app.post('/api/delete')
+def api_delete():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        p = safe_rel_to_abs(data.get('path', ''))
+        if not p.exists():
+            raise FileNotFoundError('not found')
+        rel = str(p.relative_to(MEDIA_DIR))
+        if p.is_dir():
+            shutil.rmtree(p)
+        else:
+            p.unlink()
+        add_event(f'DELETE {rel}')
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
+
+
+@app.post('/api/upload')
+def api_upload():
+    try:
+        target_dir = request.form.get('dir', '').strip().lstrip('/')
+        base = safe_rel_to_abs(target_dir)
+        base.mkdir(parents=True, exist_ok=True)
+
+        files = request.files.getlist('files')
+        relpaths = request.form.getlist('relpath')
+
+        if not files:
+            return jsonify({'ok': False, 'error': 'no files'}), 400
+
+        saved = []
+        for i, f in enumerate(files):
+            rel = relpaths[i] if i < len(relpaths) and relpaths[i] else f.filename
+            rel = rel.replace('\\', '/').lstrip('/')
+            out = safe_rel_to_abs(str(Path(target_dir) / rel))
+            out.parent.mkdir(parents=True, exist_ok=True)
+            f.save(out)
+            saved.append(str(out.relative_to(MEDIA_DIR)))
+
+        add_event(f'UPLOAD {len(saved)} file(s)')
+        return jsonify({'ok': True, 'saved': saved})
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 400
+
+
 @app.get('/')
 def index():
     return Response("""
 <!doctype html><html><head><meta charset='utf-8'><title>musicbox</title>
-<style>body{font-family:system-ui;background:#111;color:#eee;padding:14px}.row{display:flex;gap:8px;flex-wrap:wrap}.card{background:#1d1d1d;border:1px solid #333;border-radius:8px;padding:8px}.on{color:#4ade80}.off{color:#9ca3af}button{padding:6px 10px}pre{background:#0b0b0b;padding:8px;border-radius:6px;max-height:250px;overflow:auto}ul{max-height:300px;overflow:auto}</style>
+<style>
+body{font-family:system-ui;background:#111;color:#eee;padding:14px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.card{background:#1d1d1d;border:1px solid #333;border-radius:8px;padding:8px}
+.on{color:#4ade80}.off{color:#9ca3af}
+button,input{padding:6px 10px;background:#222;color:#eee;border:1px solid #444;border-radius:6px}
+pre{background:#0b0b0b;padding:8px;border-radius:6px;max-height:240px;overflow:auto}
+ul{max-height:260px;overflow:auto}
+#drop{border:2px dashed #555;border-radius:10px;padding:14px;margin:10px 0}
+small{color:#9ca3af}
+</style>
 </head><body>
 <h2>musicbox</h2>
 <div class='row'>
-<div class='card'>B1 <span id=b1></span></div><div class='card'>B2 <span id=b2></span></div><div class='card'>B3 <span id=b3></span></div><div class='card'>B4 <span id=b4></span></div>
-<div class='card'>ROT <span id=rot></span></div><div class='card'>SW <span id=sw></span></div><div class='card'>CARD <span id=card>-</span></div>
-<div class='card'>PLAYER <span id=player>stopped</span></div>
+  <div class='card'>B1 <span id=b1></span></div><div class='card'>B2 <span id=b2></span></div><div class='card'>B3 <span id=b3></span></div><div class='card'>B4 <span id=b4></span></div>
+  <div class='card'>ROT <span id=rot></span></div><div class='card'>SW <span id=sw></span></div><div class='card'>CARD <span id=card>-</span></div>
+  <div class='card'>PLAYER <span id=player>stopped</span></div>
 </div>
-<h3>Media</h3><button onclick='reloadFiles()'>refresh</button> <button onclick='stopPlay()'>stop</button><ul id=files></ul>
+
+<h3>File manager</h3>
+<div class='row'>
+  <input id='targetDir' placeholder='target dir under /media (e.g. kids/stories)' style='min-width:320px'>
+  <button onclick='mkDir()'>create dir</button>
+  <button onclick='reloadFiles()'>refresh</button>
+  <button onclick='stopPlay()'>stop</button>
+</div>
+<div id='drop'>Drag & drop files/folders here (or use picker below)</div>
+<div class='row'>
+  <input id='pickFiles' type='file' multiple>
+  <input id='pickFolder' type='file' webkitdirectory directory multiple>
+  <button onclick='uploadPicked()'>upload selected</button>
+</div>
+<small>Folder uploads preserve relative paths when browser supports it.</small>
+
+<ul id=files></ul>
+
 <h3>Events</h3><pre id=events></pre>
 <script>
-async function api(path, opts){const r=await fetch(path,opts);return await r.json()}
-async function reloadFiles(){const d=await api('/api/files');const ul=document.getElementById('files');ul.innerHTML='';d.files.forEach(f=>{const li=document.createElement('li');const b=document.createElement('button');b.textContent='play';b.onclick=()=>play(f);li.textContent=f+' ';li.appendChild(b);ul.appendChild(li);});}
-async function play(f){await api('/api/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:f})});}
-async function stopPlay(){await api('/api/stop',{method:'POST'});}
-async function tick(){const s=await api('/api/status');for(let i=0;i<4;i++){const e=document.getElementById('b'+(i+1));const on=s.buttons[i]===1;e.textContent=on?'PRESSED':'released';e.className=on?'on':'off';}
-document.getElementById('rot').textContent=s.rotary_last+' '+s.rotary_pos;const sw=document.getElementById('sw');const on=s.rotary_sw===1;sw.textContent=on?'PRESSED':'released';sw.className=on?'on':'off';document.getElementById('card').textContent=s.last_card||'-';document.getElementById('player').textContent=(s.player.status||'stopped')+(s.player.file?(' '+s.player.file):'');document.getElementById('events').textContent=s.events.join('\n');}
+async function api(path, opts){ const r = await fetch(path, opts); return await r.json(); }
+
+async function reloadFiles(){
+  const d = await api('/api/files');
+  const ul = document.getElementById('files');
+  ul.innerHTML='';
+  d.files.forEach(f=>{
+    const li=document.createElement('li');
+    li.innerHTML = `${f} `;
+    const bPlay=document.createElement('button'); bPlay.textContent='play'; bPlay.onclick=()=>play(f);
+    const bDel=document.createElement('button'); bDel.textContent='delete'; bDel.onclick=()=>delPath(f);
+    li.appendChild(bPlay); li.appendChild(document.createTextNode(' ')); li.appendChild(bDel);
+    ul.appendChild(li);
+  });
+}
+
+async function play(f){ await api('/api/play',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({file:f})}); }
+async function stopPlay(){ await api('/api/stop',{method:'POST'}); }
+async function delPath(p){ if(!confirm('Delete '+p+' ?')) return; await api('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})}); await reloadFiles(); }
+async function mkDir(){ const p=document.getElementById('targetDir').value.trim(); if(!p) return; await api('/api/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})}); await reloadFiles(); }
+
+async function uploadFiles(files){
+  if(!files.length) return;
+  const dir = document.getElementById('targetDir').value.trim();
+  const fd = new FormData();
+  fd.append('dir', dir);
+  for(const f of files){
+    fd.append('files', f, f.name);
+    fd.append('relpath', f.webkitRelativePath || f.name);
+  }
+  const res = await fetch('/api/upload',{method:'POST', body:fd});
+  const j = await res.json();
+  if(!j.ok){ alert('Upload failed: '+(j.error||'unknown')); }
+  await reloadFiles();
+}
+
+async function uploadPicked(){
+  const a=[...document.getElementById('pickFiles').files];
+  const b=[...document.getElementById('pickFolder').files];
+  await uploadFiles([...a,...b]);
+  document.getElementById('pickFiles').value='';
+  document.getElementById('pickFolder').value='';
+}
+
+const drop=document.getElementById('drop');
+drop.addEventListener('dragover',e=>{e.preventDefault();drop.style.borderColor='#999';});
+drop.addEventListener('dragleave',e=>{drop.style.borderColor='#555';});
+drop.addEventListener('drop',async e=>{e.preventDefault();drop.style.borderColor='#555'; await uploadFiles([...e.dataTransfer.files]);});
+
+async function tick(){
+  const s=await api('/api/status');
+  for(let i=0;i<4;i++){const e=document.getElementById('b'+(i+1));const on=s.buttons[i]===1;e.textContent=on?'PRESSED':'released';e.className=on?'on':'off';}
+  document.getElementById('rot').textContent=s.rotary_last+' '+s.rotary_pos;
+  const sw=document.getElementById('sw');const on=s.rotary_sw===1;sw.textContent=on?'PRESSED':'released';sw.className=on?'on':'off';
+  document.getElementById('card').textContent=s.last_card||'-';
+  document.getElementById('player').textContent=(s.player.status||'stopped')+(s.player.file?(' '+s.player.file):'');
+  document.getElementById('events').textContent=s.events.join('\\n');
+}
 setInterval(tick,300); tick(); reloadFiles();
 </script></body></html>
 """, mimetype='text/html')
