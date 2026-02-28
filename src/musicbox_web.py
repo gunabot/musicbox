@@ -257,7 +257,7 @@ def play_file(relpath):
             raise FileNotFoundError('no audio files in folder')
         playlist = Path('/tmp/musicbox-playlist.m3u')
         playlist.write_text('\n'.join(str(p) for p in files) + '\n')
-        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--audio-device=alsa/plughw:1,0', '--playlist', str(playlist)])
+        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--audio-device=alsa/plughw:1,0', f'--playlist={playlist}'])
     else:
         player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--audio-device=alsa/plughw:1,0', str(target)])
 
