@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Musicbox Control</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Musicbox</h1>
+      <p class="subtitle">Control panel for playback, cards, and hardware</p>
+    </div>
+    <div class="status-grid">
+      <div class="badge"><span>Player</span><strong id="badge-player">stopped</strong></div>
+      <div class="badge"><span>Card</span><strong id="badge-card">-</strong></div>
+      <div class="badge"><span>RFID</span><strong id="badge-rfid">unknown</strong></div>
+      <div class="badge"><span>I2C</span><strong id="badge-seesaw">unknown</strong></div>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="Primary">
+    <button data-tab="now" class="tab active">Now Playing</button>
+    <button data-tab="library" class="tab">Library</button>
+    <button data-tab="cards" class="tab">Cards</button>
+    <button data-tab="hardware" class="tab">Hardware</button>
+    <button data-tab="settings" class="tab">Settings</button>
+    <button data-tab="events" class="tab">Events</button>
+  </nav>
+
+  <main>
+    <section id="tab-now" class="panel active">
+      <div class="card">
+        <h2>Now Playing</h2>
+        <p id="now-file" class="mono">No active track</p>
+        <p id="now-volume">Volume: --</p>
+        <div class="control-grid">
+          <button class="primary" data-action="playpause">Play/Pause</button>
+          <button data-action="prev">Previous</button>
+          <button data-action="next">Next</button>
+          <button data-action="voldown">Volume -</button>
+          <button data-action="volup">Volume +</button>
+          <button data-action="stop" class="danger">Stop</button>
+        </div>
+      </div>
+
+      <div class="card two-col">
+        <div>
+          <h3>Quick Play</h3>
+          <input id="quick-play-path" placeholder="media path (file or folder)">
+          <div class="inline-actions">
+            <button id="quick-play-btn">Play Path</button>
+            <button id="quick-stop-btn">Stop</button>
+          </div>
+        </div>
+        <div>
+          <h3>Live Inputs</h3>
+          <div class="kv"><span>B1</span><strong id="hw-b1">-</strong></div>
+          <div class="kv"><span>B2</span><strong id="hw-b2">-</strong></div>
+          <div class="kv"><span>B3</span><strong id="hw-b3">-</strong></div>
+          <div class="kv"><span>B4</span><strong id="hw-b4">-</strong></div>
+          <div class="kv"><span>Rotary</span><strong id="hw-rot">-</strong></div>
+          <div class="kv"><span>Switch</span><strong id="hw-sw">-</strong></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-library" class="panel">
+      <div class="card">
+        <h2>Library</h2>
+        <div class="toolbar">
+          <input id="lib-search" placeholder="Search files and folders">
+          <select id="lib-kind">
+            <option value="all">All</option>
+            <option value="files">Files only</option>
+            <option value="dirs">Folders only</option>
+          </select>
+          <button id="lib-refresh">Refresh</button>
+        </div>
+
+        <div class="toolbar">
+          <input id="target-dir" placeholder="target dir under /media (e.g. stories/train)">
+          <button id="mkdir-btn">Create Dir</button>
+        </div>
+
+        <div id="drop-zone" class="drop-zone">Drag and drop files/folders here</div>
+        <div class="toolbar">
+          <input id="pick-files" type="file" multiple>
+          <input id="pick-folder" type="file" webkitdirectory directory multiple>
+          <button id="upload-btn">Upload Selected</button>
+          <progress id="upload-progress" value="0" max="100"></progress>
+          <span id="upload-status" class="muted">idle</span>
+        </div>
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Path</th>
+              <th>Mapped Card</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="library-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-cards" class="panel">
+      <div class="card">
+        <h2>Card Mapping</h2>
+        <div class="toolbar">
+          <input id="map-card" placeholder="Card ID (auto-filled on scan)">
+          <input id="map-target" placeholder="target file/folder under /media">
+          <button id="map-save">Save Mapping</button>
+          <button id="map-delete" class="danger">Delete Mapping</button>
+        </div>
+        <div class="toolbar">
+          <button id="map-from-selected">Use selected library item</button>
+          <button id="map-refresh">Refresh Mappings</button>
+          <span id="map-selected" class="muted">No library item selected</span>
+        </div>
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Card</th>
+              <th>Target</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="mappings-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="tab-hardware" class="panel">
+      <div class="card">
+        <h2>Hardware Health</h2>
+        <div class="kv"><span>I2C Seesaw</span><strong id="health-seesaw">-</strong></div>
+        <div class="kv"><span>RFID Reader</span><strong id="health-rfid">-</strong></div>
+        <div class="kv"><span>Audio Device</span><strong id="health-audio">-</strong></div>
+        <div class="kv"><span>MPV Process</span><strong id="health-mpv">-</strong></div>
+      </div>
+    </section>
+
+    <section id="tab-settings" class="panel">
+      <div class="card">
+        <h2>Settings</h2>
+        <label for="led-speed">Rotary LED speed (ms/step)</label>
+        <div class="toolbar">
+          <input id="led-speed" type="range" min="5" max="250" step="1" value="25">
+          <strong id="led-speed-value">25</strong>
+          <button id="save-settings">Save</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-events" class="panel">
+      <div class="card">
+        <h2>Event Log</h2>
+        <div class="toolbar">
+          <button id="events-clear-view">Clear View</button>
+        </div>
+        <pre id="events-log" class="log"></pre>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
