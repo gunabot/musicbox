@@ -25,6 +25,7 @@ MAPPINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
 MPV_SOCKET = '/tmp/musicbox-mpv.sock'
 
 BUTTON_PINS = [18, 19, 20, 2]
+LED_PINS = [12, 13, 0, 1]
 ROT_CLK = 5
 ROT_DT = 6
 ROT_SW = 13
@@ -79,6 +80,9 @@ def monitor_inputs():
     ss = Seesaw(i2c, addr=0x3A)
     for p in BUTTON_PINS:
         ss.pin_mode(p, ss.INPUT_PULLUP)
+    for p in LED_PINS:
+        ss.pin_mode(p, ss.OUTPUT)
+        ss.digital_write(p, False)
 
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(ROT_CLK, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -112,6 +116,10 @@ def monitor_inputs():
             if old != new:
                 pressed = (new == 1)
                 add_event(f"BUTTON{i} {'PRESSED' if pressed else 'RELEASED'}")
+                try:
+                    ss.digital_write(LED_PINS[i-1], pressed)
+                except Exception:
+                    pass
                 if pressed:
                     # Physical order requested: green red blue blue
                     # BUTTON1=play/pause, BUTTON2=stop, BUTTON3=prev, BUTTON4=next
