@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import json
 import shutil
 import threading
 import time
@@ -17,6 +18,8 @@ from evdev import InputDevice, ecodes, list_devices
 
 MEDIA_DIR = Path('/home/musicbox/media')
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+MAPPINGS_PATH = Path('/home/musicbox/musicbox/config/card_mappings.json')
+MAPPINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 BUTTON_PINS = [18, 19, 20, 2]
 ROT_CLK = 5
@@ -45,6 +48,19 @@ def ts():
 def add_event(msg):
     with lock:
         state['events'].appendleft(f"[{ts()}] {msg}")
+
+
+def load_mappings():
+    if not MAPPINGS_PATH.exists():
+        return {}
+    try:
+        return json.loads(MAPPINGS_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def save_mappings(m):
+    MAPPINGS_PATH.write_text(json.dumps(m, indent=2, sort_keys=True))
 
 
 def safe_rel_to_abs(relpath: str) -> Path:
@@ -155,6 +171,17 @@ def monitor_rfid():
                         with lock:
                             state['last_card'] = buf
                         add_event(f'CARD {buf}')
+
+                        mappings = load_mappings()
+                        mapped = mappings.get(buf)
+                        if mapped:
+                            try:
+                                play_file(mapped)
+                                add_event(f'CARD_MAPPED {buf} -> {mapped}')
+                            except Exception as e:
+                                add_event(f'CARD_MAPPED_ERR {buf}: {e}')
+                        else:
+                            add_event(f'CARD_UNMAPPED {buf}')
                         buf = ''
                     continue
                 ch = keymap.get(ev.code)
@@ -198,13 +225,33 @@ def stop_player():
         state['player'] = {'status': 'stopped', 'file': None}
 
 
+def _audio_files_in_dir(d: Path):
+    exts = {'.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac'}
+    out = []
+    for p in d.rglob('*'):
+        if p.is_file() and p.suffix.lower() in exts:
+            out.append(p)
+    return sorted(out)
+
+
 def play_file(relpath):
     global player_proc
     target = safe_rel_to_abs(relpath)
-    if not target.exists() or not target.is_file():
+    if not target.exists():
         raise FileNotFoundError(relpath)
+
     stop_player()
-    player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', str(target)])
+
+    if target.is_dir():
+        files = _audio_files_in_dir(target)
+        if not files:
+            raise FileNotFoundError('no audio files in folder')
+        playlist = Path('/tmp/musicbox-playlist.m3u')
+        playlist.write_text('\n'.join(str(p) for p in files) + '\n')
+        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', '--playlist', str(playlist)])
+    else:
+        player_proc = subprocess.Popen(['mpv', '--no-video', '--really-quiet', str(target)])
+
     with lock:
         state['player'] = {'status': 'playing', 'file': str(target.relative_to(MEDIA_DIR))}
     add_event(f'PLAY {relpath}')
@@ -314,6 +361,30 @@ def api_upload():
         return jsonify({'ok': False, 'error': str(e)}), 400
 
 
+@app.get('/api/mappings')
+def api_mappings_get():
+    return jsonify({'ok': True, 'mappings': load_mappings(), 'path': str(MAPPINGS_PATH)})
+
+
+@app.post('/api/mappings')
+def api_mappings_set():
+    data = request.get_json(force=True, silent=True) or {}
+    card = str(data.get('card', '')).strip()
+    target = str(data.get('target', '')).strip().lstrip('/')
+    if not card:
+        return jsonify({'ok': False, 'error': 'card required'}), 400
+    m = load_mappings()
+    if target:
+        safe_rel_to_abs(target)  # validate path traversal
+        m[card] = target
+        add_event(f'MAP_SET {card} -> {target}')
+    else:
+        m.pop(card, None)
+        add_event(f'MAP_DEL {card}')
+    save_mappings(m)
+    return jsonify({'ok': True, 'mappings': m})
+
+
 @app.get('/')
 def index():
     return Response("""
@@ -354,6 +425,16 @@ small{color:#9ca3af}
 
 <ul id=files></ul>
 
+<h3>Card mappings</h3>
+<div class='row'>
+  <input id='mapCard' placeholder='card id (scan card first to auto-fill)' style='min-width:240px'>
+  <input id='mapTarget' placeholder='target file/folder under /media' style='min-width:320px'>
+  <button onclick='saveMapping()'>save mapping</button>
+  <button onclick='deleteMapping()'>delete mapping</button>
+  <button onclick='reloadMappings()'>refresh mappings</button>
+</div>
+<pre id='mappings'></pre>
+
 <h3>Events</h3><pre id=events></pre>
 <script>
 async function api(path, opts){ const r = await fetch(path, opts); return await r.json(); }
@@ -376,6 +457,24 @@ async function play(f){ await api('/api/play',{method:'POST',headers:{'Content-T
 async function stopPlay(){ await api('/api/stop',{method:'POST'}); }
 async function delPath(p){ if(!confirm('Delete '+p+' ?')) return; await api('/api/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})}); await reloadFiles(); }
 async function mkDir(){ const p=document.getElementById('targetDir').value.trim(); if(!p) return; await api('/api/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:p})}); await reloadFiles(); }
+
+async function reloadMappings(){
+  const d = await api('/api/mappings');
+  document.getElementById('mappings').textContent = JSON.stringify(d.mappings || {}, null, 2);
+}
+async function saveMapping(){
+  const card=document.getElementById('mapCard').value.trim();
+  const target=document.getElementById('mapTarget').value.trim();
+  if(!card||!target){ alert('card + target required'); return; }
+  await api('/api/mappings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({card,target})});
+  await reloadMappings();
+}
+async function deleteMapping(){
+  const card=document.getElementById('mapCard').value.trim();
+  if(!card){ alert('card required'); return; }
+  await api('/api/mappings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({card,target:''})});
+  await reloadMappings();
+}
 
 async function uploadFiles(files){
   if(!files.length) return;
@@ -411,10 +510,11 @@ async function tick(){
   document.getElementById('rot').textContent=s.rotary_last+' '+s.rotary_pos;
   const sw=document.getElementById('sw');const on=s.rotary_sw===1;sw.textContent=on?'PRESSED':'released';sw.className=on?'on':'off';
   document.getElementById('card').textContent=s.last_card||'-';
+  if (s.last_card && !document.getElementById('mapCard').value) document.getElementById('mapCard').value = s.last_card;
   document.getElementById('player').textContent=(s.player.status||'stopped')+(s.player.file?(' '+s.player.file):'');
   document.getElementById('events').textContent=s.events.join('\\n');
 }
-setInterval(tick,300); tick(); reloadFiles();
+setInterval(tick,300); tick(); reloadFiles(); reloadMappings();
 </script></body></html>
 """, mimetype='text/html')
 
