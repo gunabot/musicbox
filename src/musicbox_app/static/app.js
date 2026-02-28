@@ -1,23 +1,157 @@
 (() => {
+  const STORAGE_KEY = 'musicbox-ui-v2';
+
   const state = {
     snapshot: null,
     mappings: {},
     entries: [],
     selectedPath: '',
+    currentDir: '',
+    treeNodes: {},
+    expandedDirs: new Set(['']),
     events: [],
     lastEventId: 0,
     pendingUploads: [],
     lastAutoCard: '',
     sse: null,
     pollTimer: null,
+    activeTab: 'now',
+    libKind: 'all',
+    libMapped: 'all',
+    libSearch: '',
+    sliderEditing: false,
+    sliderDirty: false,
   };
 
   const $ = (id) => document.getElementById(id);
+
+  function normalizeRel(path) {
+    return String(path || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  }
+
+  function parentPath(path) {
+    const norm = normalizeRel(path);
+    if (!norm.includes('/')) {
+      return '';
+    }
+    return norm.split('/').slice(0, -1).join('/');
+  }
+
+  function basename(path) {
+    const norm = normalizeRel(path);
+    if (!norm) {
+      return '';
+    }
+    const parts = norm.split('/');
+    return parts[parts.length - 1];
+  }
+
+  function ancestors(path) {
+    const norm = normalizeRel(path);
+    if (!norm) {
+      return [''];
+    }
+    const chunks = norm.split('/');
+    const all = [''];
+    let current = '';
+    for (const chunk of chunks) {
+      current = current ? `${current}/${chunk}` : chunk;
+      all.push(current);
+    }
+    return all;
+  }
 
   function setText(id, value) {
     const el = $(id);
     if (el) {
       el.textContent = value == null || value === '' ? '-' : String(value);
+    }
+  }
+
+  function setInlineText(id, value) {
+    const el = $(id);
+    if (el) {
+      el.textContent = value == null ? '' : String(value);
+    }
+  }
+
+  function formatBytes(bytes) {
+    if (bytes == null || Number.isNaN(Number(bytes))) {
+      return '-';
+    }
+    const value = Number(bytes);
+    if (value < 1024) {
+      return `${value} B`;
+    }
+    const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+    let size = value;
+    let unitIdx = -1;
+    while (size >= 1024 && unitIdx < units.length - 1) {
+      size /= 1024;
+      unitIdx += 1;
+    }
+    return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unitIdx]}`;
+  }
+
+  function formatUptime(seconds) {
+    if (seconds == null || Number.isNaN(Number(seconds))) {
+      return '-';
+    }
+    let remaining = Math.max(0, Math.floor(Number(seconds)));
+    const days = Math.floor(remaining / 86400);
+    remaining %= 86400;
+    const hours = Math.floor(remaining / 3600);
+    remaining %= 3600;
+    const minutes = Math.floor(remaining / 60);
+
+    const parts = [];
+    if (days) {
+      parts.push(`${days}d`);
+    }
+    if (hours || days) {
+      parts.push(`${hours}h`);
+    }
+    parts.push(`${minutes}m`);
+    return parts.join(' ');
+  }
+
+  function loadUiPrefs() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+      const prefs = JSON.parse(raw);
+      state.activeTab = ['now', 'library', 'cards', 'hardware', 'settings', 'events'].includes(prefs.activeTab)
+        ? prefs.activeTab
+        : 'now';
+      state.currentDir = normalizeRel(prefs.currentDir);
+      state.selectedPath = normalizeRel(prefs.selectedPath);
+      state.libKind = ['all', 'files', 'dirs'].includes(prefs.libKind) ? prefs.libKind : 'all';
+      state.libMapped = ['all', 'mapped', 'unmapped'].includes(prefs.libMapped) ? prefs.libMapped : 'all';
+      state.libSearch = String(prefs.libSearch || '');
+
+      const expanded = Array.isArray(prefs.expandedDirs) ? prefs.expandedDirs.map(normalizeRel) : [];
+      state.expandedDirs = new Set(['', ...expanded]);
+    } catch (_err) {
+      // ignore bad local storage
+    }
+  }
+
+  function saveUiPrefs() {
+    const payload = {
+      activeTab: state.activeTab,
+      currentDir: state.currentDir,
+      selectedPath: state.selectedPath,
+      libKind: $('lib-kind') ? $('lib-kind').value : state.libKind,
+      libMapped: $('lib-mapped') ? $('lib-mapped').value : state.libMapped,
+      libSearch: $('lib-search') ? $('lib-search').value : state.libSearch,
+      expandedDirs: Array.from(state.expandedDirs.values()),
+    };
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch (_err) {
+      // ignore storage issues
     }
   }
 
@@ -80,14 +214,36 @@
       state.events.push(`[${ev.ts || '--:--:--'}]${level} ${ev.msg || ''}`.trim());
     }
 
-    if (state.events.length > 500) {
-      state.events = state.events.slice(-500);
+    if (state.events.length > 700) {
+      state.events = state.events.slice(-700);
     }
 
     const logEl = $('events-log');
     if (logEl) {
       logEl.textContent = state.events.join('\n');
       logEl.scrollTop = logEl.scrollHeight;
+    }
+  }
+
+  function renderSliderDirty() {
+    setInlineText('led-speed-dirty', state.sliderDirty ? 'Unsaved changes' : '');
+  }
+
+  function setBatteryBadge(percent) {
+    const badge = $('badge-battery');
+    if (!badge) {
+      return;
+    }
+    badge.classList.remove('good', 'warn');
+    if (percent == null) {
+      badge.textContent = '-';
+      return;
+    }
+    badge.textContent = `${Number(percent).toFixed(0)}%`;
+    if (percent <= 20) {
+      badge.classList.add('warn');
+    } else {
+      badge.classList.add('good');
     }
   }
 
@@ -104,6 +260,7 @@
     setText('badge-card', snapshot.last_card || '-');
     setText('badge-rfid', health.rfid_device ? 'ready' : 'missing');
     setText('badge-seesaw', badgeBool(Boolean(health.seesaw)));
+    setBatteryBadge(health.battery_percent);
 
     setText('now-file', player.file || 'No active track');
     setText('now-volume', `Volume: ${player.volume == null ? '--' : player.volume}`);
@@ -120,13 +277,37 @@
     setText('health-audio', health.audio_device || 'not detected');
     setText('health-mpv', badgeBool(Boolean(health.mpv_running)));
 
+    setText('health-ups', health.ups_connected ? 'connected' : 'not detected');
+    setText('health-battery', health.battery_percent == null ? '-' : `${Number(health.battery_percent).toFixed(1)}%`);
+    setText('health-battery-voltage', health.battery_voltage == null ? '-' : `${Number(health.battery_voltage).toFixed(3)} V`);
+    setText('health-battery-current', health.battery_current_ma == null ? '-' : `${Number(health.battery_current_ma).toFixed(1)} mA`);
+    setText('health-battery-power', health.battery_power_w == null ? '-' : `${Number(health.battery_power_w).toFixed(3)} W`);
+    setText('health-battery-charging', health.battery_charging == null ? '-' : (health.battery_charging ? 'yes' : 'no'));
+
+    setText('health-cpu-temp', health.cpu_temp_c == null ? '-' : `${Number(health.cpu_temp_c).toFixed(1)} C`);
+    setText('health-uptime', formatUptime(health.uptime_s));
+
+    if (health.load_1 == null || health.load_5 == null || health.load_15 == null) {
+      setText('health-load', '-');
+    } else {
+      setText('health-load', `${health.load_1} / ${health.load_5} / ${health.load_15}`);
+    }
+
+    if (health.disk_total_bytes == null || health.disk_free_bytes == null || health.disk_used_pct == null) {
+      setText('health-disk', '-');
+    } else {
+      const free = formatBytes(health.disk_free_bytes);
+      const total = formatBytes(health.disk_total_bytes);
+      setText('health-disk', `${free} free / ${total} (${health.disk_used_pct}% used)`);
+    }
+
     const speed = snapshot.settings && snapshot.settings.rotary_led_step_ms;
     if (speed != null) {
       const slider = $('led-speed');
-      if (slider) {
+      if (slider && !state.sliderDirty && !state.sliderEditing) {
         slider.value = String(speed);
+        setText('led-speed-value', speed);
       }
-      setText('led-speed-value', speed);
     }
 
     if (snapshot.last_card) {
@@ -145,19 +326,239 @@
     renderStatus(payload);
   }
 
-  function activateTab(tabName) {
+  function activateTab(tabName, persist = true) {
+    state.activeTab = tabName;
     document.querySelectorAll('.tab').forEach((btn) => {
       btn.classList.toggle('active', btn.dataset.tab === tabName);
     });
     document.querySelectorAll('.panel').forEach((panel) => {
       panel.classList.toggle('active', panel.id === `tab-${tabName}`);
     });
+    if (persist) {
+      saveUiPrefs();
+    }
   }
 
   function setSelectedPath(path) {
-    state.selectedPath = path || '';
+    state.selectedPath = normalizeRel(path);
     setText('map-selected', state.selectedPath || 'No library item selected');
+    if (state.selectedPath) {
+      $('move-dst').value = basename(state.selectedPath);
+    }
     renderLibrary();
+    saveUiPrefs();
+  }
+
+  async function loadTreeNode(path = '') {
+    const rel = normalizeRel(path);
+    const payload = await apiFetch(`/api/tree?path=${encodeURIComponent(rel)}`);
+    state.treeNodes[rel] = payload.node;
+    return payload.node;
+  }
+
+  async function ensureTreePathLoaded(path) {
+    const chain = ancestors(path);
+    if (!state.treeNodes['']) {
+      await loadTreeNode('');
+    }
+    for (const item of chain) {
+      state.expandedDirs.add(item);
+      if (item && !state.treeNodes[item]) {
+        try {
+          await loadTreeNode(item);
+        } catch (_err) {
+          // ignore missing path
+        }
+      }
+    }
+  }
+
+  async function refreshTree() {
+    state.treeNodes = {};
+    await loadTreeNode('');
+    await ensureTreePathLoaded(state.currentDir);
+    renderTree();
+    renderBreadcrumb();
+  }
+
+  function renderBreadcrumb() {
+    const el = $('lib-breadcrumb');
+    if (!el) {
+      return;
+    }
+    el.textContent = '';
+
+    const rootBtn = document.createElement('button');
+    rootBtn.className = 'crumb';
+    rootBtn.textContent = '/media';
+    rootBtn.addEventListener('click', () => {
+      void setCurrentDir('');
+    });
+    el.appendChild(rootBtn);
+
+    let current = '';
+    for (const segment of normalizeRel(state.currentDir).split('/').filter(Boolean)) {
+      current = current ? `${current}/${segment}` : segment;
+      const segBtn = document.createElement('button');
+      segBtn.className = 'crumb';
+      segBtn.textContent = segment;
+      const target = current;
+      segBtn.addEventListener('click', () => {
+        void setCurrentDir(target);
+      });
+      el.appendChild(segBtn);
+    }
+  }
+
+  function renderTreeChildren(parentPath, node, depth) {
+    const frag = document.createDocumentFragment();
+    const children = Array.isArray(node.children) ? node.children : [];
+    const dirs = children.filter((entry) => entry.type === 'dir');
+
+    for (const dir of dirs) {
+      const rel = normalizeRel(dir.path);
+      const row = document.createElement('div');
+      row.className = 'tree-node';
+
+      const line = document.createElement('div');
+      line.className = 'tree-row';
+
+      for (let i = 0; i < depth; i += 1) {
+        const spacer = document.createElement('span');
+        spacer.className = 'tree-depth';
+        line.appendChild(spacer);
+      }
+
+      const toggle = document.createElement('button');
+      toggle.className = 'tree-toggle';
+      const expanded = state.expandedDirs.has(rel);
+      const hasChildren = Boolean(dir.has_children);
+      toggle.textContent = hasChildren ? (expanded ? '▾' : '▸') : '•';
+      toggle.disabled = !hasChildren;
+      toggle.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        if (!hasChildren) {
+          return;
+        }
+        if (state.expandedDirs.has(rel)) {
+          state.expandedDirs.delete(rel);
+          renderTree();
+          saveUiPrefs();
+          return;
+        }
+        state.expandedDirs.add(rel);
+        try {
+          if (!state.treeNodes[rel]) {
+            await loadTreeNode(rel);
+          }
+          renderTree();
+          saveUiPrefs();
+        } catch (err) {
+          toast(`Failed to expand folder: ${err.message}`, 'error');
+        }
+      });
+      line.appendChild(toggle);
+
+      const label = document.createElement('button');
+      label.className = 'tree-label';
+      if (rel === state.currentDir) {
+        label.classList.add('selected');
+      }
+      label.textContent = dir.name;
+      label.addEventListener('click', () => {
+        void setCurrentDir(rel);
+      });
+      line.appendChild(label);
+
+      row.appendChild(line);
+
+      if (expanded && state.treeNodes[rel]) {
+        row.appendChild(renderTreeChildren(rel, state.treeNodes[rel], depth + 1));
+      }
+
+      frag.appendChild(row);
+    }
+
+    return frag;
+  }
+
+  function renderTree() {
+    const root = $('library-tree');
+    if (!root) {
+      return;
+    }
+
+    root.textContent = '';
+    const rootNode = state.treeNodes[''];
+    if (!rootNode) {
+      const btn = document.createElement('button');
+      btn.textContent = 'Load folders';
+      btn.addEventListener('click', async () => {
+        try {
+          await loadTreeNode('');
+          renderTree();
+        } catch (err) {
+          toast(`Tree load failed: ${err.message}`, 'error');
+        }
+      });
+      root.appendChild(btn);
+      return;
+    }
+
+    root.appendChild(renderTreeChildren('', rootNode, 0));
+  }
+
+  function mappedCardsByPath() {
+    const map = {};
+    for (const [card, target] of Object.entries(state.mappings || {})) {
+      if (!map[target]) {
+        map[target] = [];
+      }
+      map[target].push(card);
+    }
+    return map;
+  }
+
+  async function confirmDelete(path) {
+    const payload = await apiFetch(`/api/pathinfo?path=${encodeURIComponent(path)}`);
+    const info = payload.info || {};
+    if (!info.exists) {
+      return false;
+    }
+
+    if (info.type === 'dir') {
+      const size = formatBytes(info.size_bytes);
+      return window.confirm(
+        `Delete folder "${path}"?\n\nContains ${info.dir_count || 0} subfolder(s), ${info.file_count || 0} file(s), total ${size}.`
+      );
+    }
+
+    return window.confirm(`Delete file "${path}" (${formatBytes(info.size_bytes)})?`);
+  }
+
+  async function deleteEntry(path) {
+    const ok = await confirmDelete(path);
+    if (!ok) {
+      return;
+    }
+
+    await apiFetch('/api/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+
+    toast(`Deleted ${path}`);
+    if (state.selectedPath === path) {
+      setSelectedPath('');
+    }
+
+    if (state.currentDir === path || state.currentDir.startsWith(`${path}/`)) {
+      state.currentDir = parentPath(path);
+    }
+
+    await refreshTree();
+    await loadLibrary();
   }
 
   function renderLibrary() {
@@ -167,15 +568,18 @@
     }
     tbody.textContent = '';
 
-    const pathToCards = {};
-    for (const [card, target] of Object.entries(state.mappings || {})) {
-      if (!pathToCards[target]) {
-        pathToCards[target] = [];
-      }
-      pathToCards[target].push(card);
-    }
+    const pathToCards = mappedCardsByPath();
+    const mappedFilter = $('lib-mapped') ? $('lib-mapped').value : 'all';
 
     for (const entry of state.entries) {
+      const mappedCards = pathToCards[entry.path] || [];
+      if (mappedFilter === 'mapped' && mappedCards.length === 0) {
+        continue;
+      }
+      if (mappedFilter === 'unmapped' && mappedCards.length > 0) {
+        continue;
+      }
+
       const tr = document.createElement('tr');
       if (entry.path === state.selectedPath) {
         tr.classList.add('selected');
@@ -185,12 +589,16 @@
       typeTd.textContent = entry.type;
       tr.appendChild(typeTd);
 
+      const nameTd = document.createElement('td');
+      nameTd.textContent = entry.name;
+      tr.appendChild(nameTd);
+
       const pathTd = document.createElement('td');
       pathTd.textContent = entry.path;
       tr.appendChild(pathTd);
 
       const mapTd = document.createElement('td');
-      mapTd.textContent = (pathToCards[entry.path] || []).join(', ') || '-';
+      mapTd.textContent = mappedCards.join(', ') || '-';
       tr.appendChild(mapTd);
 
       const actionsTd = document.createElement('td');
@@ -212,6 +620,15 @@
       });
       actionsTd.appendChild(playBtn);
 
+      if (entry.type === 'dir') {
+        const openBtn = document.createElement('button');
+        openBtn.textContent = 'Open';
+        openBtn.addEventListener('click', () => {
+          void setCurrentDir(entry.path);
+        });
+        actionsTd.appendChild(openBtn);
+      }
+
       const selectBtn = document.createElement('button');
       selectBtn.textContent = 'Select';
       selectBtn.addEventListener('click', () => {
@@ -219,25 +636,21 @@
       });
       actionsTd.appendChild(selectBtn);
 
+      const mapBtn = document.createElement('button');
+      mapBtn.textContent = 'Map';
+      mapBtn.addEventListener('click', () => {
+        setSelectedPath(entry.path);
+        $('map-target').value = entry.path;
+        activateTab('cards');
+      });
+      actionsTd.appendChild(mapBtn);
+
       const delBtn = document.createElement('button');
       delBtn.textContent = 'Delete';
       delBtn.className = 'danger';
       delBtn.addEventListener('click', async () => {
-        const ok = window.confirm(`Delete ${entry.path}?`);
-        if (!ok) {
-          return;
-        }
         try {
-          await apiFetch('/api/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ path: entry.path }),
-          });
-          toast(`Deleted ${entry.path}`);
-          if (state.selectedPath === entry.path) {
-            setSelectedPath('');
-          }
-          await loadLibrary();
+          await deleteEntry(entry.path);
         } catch (err) {
           toast(`Delete failed: ${err.message}`, 'error');
         }
@@ -247,6 +660,64 @@
       tr.appendChild(actionsTd);
       tbody.appendChild(tr);
     }
+  }
+
+  async function loadLibrary() {
+    const query = ($('lib-search').value || '').trim();
+    const kind = ($('lib-kind').value || 'all').trim();
+    const recursive = query ? '1' : '0';
+
+    try {
+      const payload = await apiFetch(
+        `/api/files?path=${encodeURIComponent(state.currentDir)}&q=${encodeURIComponent(query)}&kind=${encodeURIComponent(kind)}&recursive=${recursive}`
+      );
+      state.entries = payload.entries || [];
+      state.libSearch = query;
+      state.libKind = kind;
+      renderLibrary();
+      saveUiPrefs();
+      return payload;
+    } catch (err) {
+      if (state.currentDir) {
+        state.currentDir = '';
+        $('target-dir').value = '';
+        await refreshTree();
+        return loadLibrary();
+      }
+      throw err;
+    }
+  }
+
+  async function loadMappings() {
+    const payload = await apiFetch('/api/mappings');
+    state.mappings = payload.mappings || {};
+    renderMappings();
+    renderLibrary();
+    return payload;
+  }
+
+  async function saveMapping(remove = false) {
+    const card = ($('map-card').value || '').trim();
+    const target = remove ? '' : normalizeRel(($('map-target').value || '').trim());
+    if (!card) {
+      toast('Card ID is required', 'warning');
+      return;
+    }
+    if (!remove && !target) {
+      toast('Target path is required', 'warning');
+      return;
+    }
+
+    const payload = await apiFetch('/api/mappings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ card, target }),
+    });
+
+    state.mappings = payload.mappings || {};
+    renderMappings();
+    renderLibrary();
+    toast(remove ? `Mapping removed for ${card}` : `Mapping saved for ${card}`);
   }
 
   function renderMappings() {
@@ -322,52 +793,11 @@
     }
   }
 
-  async function loadLibrary() {
-    const query = encodeURIComponent(($('lib-search').value || '').trim());
-    const kind = encodeURIComponent(($('lib-kind').value || 'all').trim());
-    const payload = await apiFetch(`/api/files?q=${query}&kind=${kind}`);
-    state.entries = payload.entries || [];
-    renderLibrary();
-    return payload;
-  }
-
-  async function loadMappings() {
-    const payload = await apiFetch('/api/mappings');
-    state.mappings = payload.mappings || {};
-    renderMappings();
-    renderLibrary();
-    return payload;
-  }
-
-  async function saveMapping(remove = false) {
-    const card = ($('map-card').value || '').trim();
-    const target = remove ? '' : ($('map-target').value || '').trim().replace(/^\/+/, '');
-    if (!card) {
-      toast('Card ID is required', 'warning');
-      return;
-    }
-    if (!remove && !target) {
-      toast('Target path is required', 'warning');
-      return;
-    }
-
-    const payload = await apiFetch('/api/mappings', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ card, target }),
-    });
-
-    state.mappings = payload.mappings || {};
-    renderMappings();
-    renderLibrary();
-    toast(remove ? `Mapping removed for ${card}` : `Mapping saved for ${card}`);
-  }
-
   function updateUploadStatus() {
     const count = state.pendingUploads.length;
     const totalBytes = state.pendingUploads.reduce((sum, item) => sum + (item.file.size || 0), 0);
-    const mb = (totalBytes / (1024 * 1024)).toFixed(1);
-    setText('upload-status', count ? `${count} file(s), ${mb} MiB queued` : 'idle');
+    const queued = count ? `${count} file(s), ${formatBytes(totalBytes)} queued` : 'idle';
+    setText('upload-status', queued);
   }
 
   function queueFiles(fileList) {
@@ -396,7 +826,8 @@
     }
 
     const formData = new FormData();
-    formData.append('dir', ($('target-dir').value || '').trim());
+    const targetDir = normalizeRel(($('target-dir').value || '').trim()) || state.currentDir;
+    formData.append('dir', targetDir);
     for (const item of state.pendingUploads) {
       formData.append('files', item.file, item.file.name);
       formData.append('relpath', item.relpath);
@@ -439,6 +870,7 @@
     }
     updateUploadStatus();
     toast(`Uploaded ${uploadedCount} file(s)`);
+    await refreshTree();
     await loadLibrary();
   }
 
@@ -448,6 +880,48 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action }),
     });
+  }
+
+  async function setCurrentDir(path) {
+    state.currentDir = normalizeRel(path);
+    state.expandedDirs = new Set([...state.expandedDirs, ...ancestors(state.currentDir)]);
+    $('target-dir').value = state.currentDir;
+    await ensureTreePathLoaded(state.currentDir);
+    renderTree();
+    renderBreadcrumb();
+    await loadLibrary();
+    saveUiPrefs();
+  }
+
+  async function moveSelected() {
+    if (!state.selectedPath) {
+      toast('Select an item first', 'warning');
+      return;
+    }
+
+    const raw = ($('move-dst').value || '').trim();
+    if (!raw) {
+      toast('Enter destination path or new name', 'warning');
+      return;
+    }
+
+    let dst = normalizeRel(raw);
+    if (!dst.includes('/')) {
+      const parent = parentPath(state.selectedPath);
+      dst = parent ? `${parent}/${dst}` : dst;
+    }
+
+    await apiFetch('/api/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ src: state.selectedPath, dst }),
+    });
+
+    toast(`Moved to ${dst}`);
+    state.selectedPath = dst;
+    await refreshTree();
+    await loadLibrary();
+    setSelectedPath(dst);
   }
 
   function startPollingFallback() {
@@ -511,7 +985,7 @@
     });
 
     $('quick-play-btn').addEventListener('click', async () => {
-      const path = ($('quick-play-path').value || '').trim();
+      const path = normalizeRel(($('quick-play-path').value || '').trim());
       if (!path) {
         toast('Provide a path to play', 'warning');
         return;
@@ -539,11 +1013,16 @@
   function bindLibrary() {
     $('lib-refresh').addEventListener('click', async () => {
       try {
+        await refreshTree();
         await loadLibrary();
       } catch (err) {
         toast(`Refresh failed: ${err.message}`, 'error');
       }
     });
+
+    $('lib-kind').value = state.libKind;
+    $('lib-mapped').value = state.libMapped;
+    $('lib-search').value = state.libSearch;
 
     $('lib-kind').addEventListener('change', async () => {
       try {
@@ -551,6 +1030,11 @@
       } catch (err) {
         toast(`Filter failed: ${err.message}`, 'error');
       }
+    });
+
+    $('lib-mapped').addEventListener('change', () => {
+      renderLibrary();
+      saveUiPrefs();
     });
 
     $('lib-search').addEventListener('keydown', async (event) => {
@@ -565,7 +1049,7 @@
     });
 
     $('mkdir-btn').addEventListener('click', async () => {
-      const path = ($('target-dir').value || '').trim();
+      const path = normalizeRel(($('target-dir').value || '').trim());
       if (!path) {
         toast('Provide a folder path first', 'warning');
         return;
@@ -577,9 +1061,18 @@
           body: JSON.stringify({ path }),
         });
         toast(`Created ${path}`);
+        await refreshTree();
         await loadLibrary();
       } catch (err) {
         toast(`Create dir failed: ${err.message}`, 'error');
+      }
+    });
+
+    $('move-btn').addEventListener('click', async () => {
+      try {
+        await moveSelected();
+      } catch (err) {
+        toast(`Move failed: ${err.message}`, 'error');
       }
     });
 
@@ -598,6 +1091,20 @@
         toast(`Upload failed: ${err.message}`, 'error');
         updateUploadStatus();
       }
+    });
+
+    $('tree-root-btn').addEventListener('click', async () => {
+      try {
+        await setCurrentDir('');
+      } catch (err) {
+        toast(`Failed to jump to root: ${err.message}`, 'error');
+      }
+    });
+
+    $('tree-collapse-btn').addEventListener('click', () => {
+      state.expandedDirs = new Set(['']);
+      renderTree();
+      saveUiPrefs();
     });
 
     const dropZone = $('drop-zone');
@@ -635,6 +1142,25 @@
       toast('Mapped target from selected item');
     });
 
+    $('map-last-scan').addEventListener('click', async () => {
+      const lastCard = state.snapshot && state.snapshot.last_card;
+      if (!lastCard) {
+        toast('No scanned card yet', 'warning');
+        return;
+      }
+      if (!state.selectedPath) {
+        toast('Select a library item first', 'warning');
+        return;
+      }
+      $('map-card').value = String(lastCard);
+      $('map-target').value = state.selectedPath;
+      try {
+        await saveMapping(false);
+      } catch (err) {
+        toast(`Save mapping failed: ${err.message}`, 'error');
+      }
+    });
+
     $('map-save').addEventListener('click', async () => {
       try {
         await saveMapping(false);
@@ -660,23 +1186,51 @@
     });
   }
 
+  async function saveLedSpeed() {
+    const value = Number($('led-speed').value || 25);
+    const payload = await apiFetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rotary_led_step_ms: value }),
+    });
+    if (payload.settings && payload.settings.rotary_led_step_ms != null) {
+      $('led-speed').value = String(payload.settings.rotary_led_step_ms);
+      setText('led-speed-value', payload.settings.rotary_led_step_ms);
+    }
+    state.sliderDirty = false;
+    state.sliderEditing = false;
+    renderSliderDirty();
+    toast('Settings saved');
+  }
+
   function bindSettings() {
-    $('led-speed').addEventListener('input', (event) => {
+    const slider = $('led-speed');
+
+    slider.addEventListener('pointerdown', () => {
+      state.sliderEditing = true;
+    });
+
+    slider.addEventListener('input', (event) => {
+      state.sliderDirty = true;
       setText('led-speed-value', event.target.value);
+      renderSliderDirty();
+    });
+
+    slider.addEventListener('change', async () => {
+      try {
+        await saveLedSpeed();
+      } catch (err) {
+        toast(`Save settings failed: ${err.message}`, 'error');
+      }
+    });
+
+    slider.addEventListener('blur', () => {
+      state.sliderEditing = false;
     });
 
     $('save-settings').addEventListener('click', async () => {
       try {
-        const value = Number($('led-speed').value || 25);
-        const payload = await apiFetch('/api/settings', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rotary_led_step_ms: value }),
-        });
-        if (payload.settings && payload.settings.rotary_led_step_ms != null) {
-          setText('led-speed-value', payload.settings.rotary_led_step_ms);
-        }
-        toast('Settings saved');
+        await saveLedSpeed();
       } catch (err) {
         toast(`Save settings failed: ${err.message}`, 'error');
       }
@@ -692,6 +1246,8 @@
   }
 
   async function init() {
+    loadUiPrefs();
+
     bindTabs();
     bindControls();
     bindLibrary();
@@ -700,14 +1256,24 @@
     bindEventsPanel();
 
     updateUploadStatus();
+    renderSliderDirty();
 
     try {
-      const [statusPayload] = await Promise.all([
-        apiFetch('/api/status'),
-        loadMappings(),
-        loadLibrary(),
-      ]);
+      await loadMappings();
+      await loadTreeNode('');
+      await ensureTreePathLoaded(state.currentDir);
+      renderTree();
+      renderBreadcrumb();
+      $('target-dir').value = state.currentDir;
+      await loadLibrary();
+      if (state.selectedPath) {
+        setSelectedPath(state.selectedPath);
+      }
+
+      const statusPayload = await apiFetch('/api/status');
       applySnapshot(statusPayload);
+      activateTab(state.activeTab, false);
+      saveUiPrefs();
     } catch (err) {
       toast(`Initial load failed: ${err.message}`, 'error');
     }

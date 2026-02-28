@@ -17,6 +17,7 @@
       <div class="badge"><span>Card</span><strong id="badge-card">-</strong></div>
       <div class="badge"><span>RFID</span><strong id="badge-rfid">unknown</strong></div>
       <div class="badge"><span>I2C</span><strong id="badge-seesaw">unknown</strong></div>
+      <div class="badge"><span>Battery</span><strong id="badge-battery">-</strong></div>
     </div>
   </header>
 
@@ -69,41 +70,65 @@
     <section id="tab-library" class="panel">
       <div class="card">
         <h2>Library</h2>
-        <div class="toolbar">
-          <input id="lib-search" placeholder="Search files and folders">
-          <select id="lib-kind">
-            <option value="all">All</option>
-            <option value="files">Files only</option>
-            <option value="dirs">Folders only</option>
-          </select>
-          <button id="lib-refresh">Refresh</button>
-        </div>
+        <div class="library-shell">
+          <aside class="tree-panel">
+            <div class="tree-header">
+              <strong>Folders</strong>
+              <div class="inline-actions">
+                <button id="tree-root-btn" class="ghost">Root</button>
+                <button id="tree-collapse-btn" class="ghost">Collapse</button>
+              </div>
+            </div>
+            <div id="lib-breadcrumb" class="breadcrumb"></div>
+            <div id="library-tree" class="tree"></div>
+          </aside>
 
-        <div class="toolbar">
-          <input id="target-dir" placeholder="target dir under /media (e.g. stories/train)">
-          <button id="mkdir-btn">Create Dir</button>
-        </div>
+          <div class="library-main">
+            <div class="toolbar">
+              <input id="lib-search" placeholder="Search in current folder subtree">
+              <select id="lib-kind">
+                <option value="all">All</option>
+                <option value="files">Files only</option>
+                <option value="dirs">Folders only</option>
+              </select>
+              <select id="lib-mapped">
+                <option value="all">All mappings</option>
+                <option value="mapped">Mapped only</option>
+                <option value="unmapped">Unmapped only</option>
+              </select>
+              <button id="lib-refresh">Refresh</button>
+            </div>
 
-        <div id="drop-zone" class="drop-zone">Drag and drop files/folders here</div>
-        <div class="toolbar">
-          <input id="pick-files" type="file" multiple>
-          <input id="pick-folder" type="file" webkitdirectory directory multiple>
-          <button id="upload-btn">Upload Selected</button>
-          <progress id="upload-progress" value="0" max="100"></progress>
-          <span id="upload-status" class="muted">idle</span>
-        </div>
+            <div class="toolbar">
+              <input id="target-dir" placeholder="target dir under /media (e.g. stories/train)">
+              <button id="mkdir-btn">Create Dir</button>
+              <input id="move-dst" placeholder="new path/name for selected item">
+              <button id="move-btn">Move/Rename Selected</button>
+            </div>
 
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Type</th>
-              <th>Path</th>
-              <th>Mapped Card</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody id="library-body"></tbody>
-        </table>
+            <div id="drop-zone" class="drop-zone">Drag and drop files/folders here</div>
+            <div class="toolbar">
+              <input id="pick-files" type="file" multiple>
+              <input id="pick-folder" type="file" webkitdirectory directory multiple>
+              <button id="upload-btn">Upload Selected</button>
+              <progress id="upload-progress" value="0" max="100"></progress>
+              <span id="upload-status" class="muted">idle</span>
+            </div>
+
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Name</th>
+                  <th>Path</th>
+                  <th>Mapped Card</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="library-body"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -118,6 +143,7 @@
         </div>
         <div class="toolbar">
           <button id="map-from-selected">Use selected library item</button>
+          <button id="map-last-scan">Map last scanned card to selected item</button>
           <button id="map-refresh">Refresh Mappings</button>
           <span id="map-selected" class="muted">No library item selected</span>
         </div>
@@ -136,12 +162,27 @@
     </section>
 
     <section id="tab-hardware" class="panel">
-      <div class="card">
-        <h2>Hardware Health</h2>
-        <div class="kv"><span>I2C Seesaw</span><strong id="health-seesaw">-</strong></div>
-        <div class="kv"><span>RFID Reader</span><strong id="health-rfid">-</strong></div>
-        <div class="kv"><span>Audio Device</span><strong id="health-audio">-</strong></div>
-        <div class="kv"><span>MPV Process</span><strong id="health-mpv">-</strong></div>
+      <div class="card two-col">
+        <div>
+          <h2>Hardware Health</h2>
+          <div class="kv"><span>I2C Seesaw</span><strong id="health-seesaw">-</strong></div>
+          <div class="kv"><span>RFID Reader</span><strong id="health-rfid">-</strong></div>
+          <div class="kv"><span>Audio Device</span><strong id="health-audio">-</strong></div>
+          <div class="kv"><span>MPV Process</span><strong id="health-mpv">-</strong></div>
+          <div class="kv"><span>UPS</span><strong id="health-ups">-</strong></div>
+          <div class="kv"><span>Battery</span><strong id="health-battery">-</strong></div>
+          <div class="kv"><span>Voltage</span><strong id="health-battery-voltage">-</strong></div>
+          <div class="kv"><span>Current</span><strong id="health-battery-current">-</strong></div>
+          <div class="kv"><span>Power</span><strong id="health-battery-power">-</strong></div>
+          <div class="kv"><span>Charging</span><strong id="health-battery-charging">-</strong></div>
+        </div>
+        <div>
+          <h2>System</h2>
+          <div class="kv"><span>CPU Temp</span><strong id="health-cpu-temp">-</strong></div>
+          <div class="kv"><span>Uptime</span><strong id="health-uptime">-</strong></div>
+          <div class="kv"><span>Load avg</span><strong id="health-load">-</strong></div>
+          <div class="kv"><span>Disk</span><strong id="health-disk">-</strong></div>
+        </div>
       </div>
     </section>
 
@@ -152,6 +193,7 @@
         <div class="toolbar">
           <input id="led-speed" type="range" min="5" max="250" step="1" value="25">
           <strong id="led-speed-value">25</strong>
+          <span id="led-speed-dirty" class="muted"></span>
           <button id="save-settings">Save</button>
         </div>
       </div>
