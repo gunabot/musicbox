@@ -356,17 +356,37 @@ def api_upload():
             return jsonify({'ok': False, 'error': 'no files'}), 400
 
         saved = []
+        skipped = 0
         for i, f in enumerate(files):
+            if not f or not getattr(f, 'filename', ''):
+                skipped += 1
+                continue
+
             rel = relpaths[i] if i < len(relpaths) and relpaths[i] else f.filename
             rel = rel.replace('\\', '/').lstrip('/')
+            # prevent weird browser paths like C:/fakepath
+            if rel.lower().startswith('c:/fakepath/'):
+                rel = rel.split('/', 2)[-1]
+            rel = str(Path(rel))
+
+            if rel in ('.', ''):
+                skipped += 1
+                continue
+
             out = safe_rel_to_abs(str(Path(target_dir) / rel))
             out.parent.mkdir(parents=True, exist_ok=True)
             f.save(out)
             saved.append(str(out.relative_to(MEDIA_DIR)))
 
-        add_event(f'UPLOAD {len(saved)} file(s)')
-        return jsonify({'ok': True, 'saved': saved})
+        if not saved:
+            msg = 'no valid files in upload payload'
+            add_event(f'UPLOAD_ERR {msg} (skipped={skipped})')
+            return jsonify({'ok': False, 'error': msg}), 400
+
+        add_event(f'UPLOAD {len(saved)} file(s), skipped={skipped}')
+        return jsonify({'ok': True, 'saved': saved, 'skipped': skipped})
     except Exception as e:
+        add_event(f'UPLOAD_ERR {e}')
         return jsonify({'ok': False, 'error': str(e)}), 400
 
 
@@ -509,17 +529,19 @@ async function deleteMapping(){
 }
 
 async function uploadFiles(files){
-  if(!files.length) return;
+  if(!files.length){ alert('No files selected'); return; }
   const dir = document.getElementById('targetDir').value.trim();
   const fd = new FormData();
   fd.append('dir', dir);
   for(const f of files){
+    if(!f || !f.name) continue;
     fd.append('files', f, f.name);
     fd.append('relpath', f.webkitRelativePath || f.name);
   }
   const res = await fetch('/api/upload',{method:'POST', body:fd});
   const j = await res.json();
   if(!j.ok){ alert('Upload failed: '+(j.error||'unknown')); }
+  else { alert(`Uploaded ${j.saved?.length||0} file(s)`); }
   await reloadFiles();
 }
 
