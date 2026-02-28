@@ -139,15 +139,15 @@ class PlayerManager:
             return True
         return False
 
-    def add_volume(self, delta: int) -> bool:
-        response = self._mpv_cmd(['add', 'volume', int(delta)])
+    def add_volume(self, delta: float) -> bool:
+        response = self._mpv_cmd(['add', 'volume', float(delta)])
         if response is None:
             return False
 
         current = self._mpv_cmd(['get_property', 'volume'])
         if current and isinstance(current.get('data'), (int, float)):
             self.store.set_player_state({'volume': round(float(current['data']))})
-        self.store.add_event(f'VOLUME {delta:+d}')
+        self.store.add_event(f'VOLUME {float(delta):+.2f}')
         return True
 
     def action(self, action: str) -> bool:

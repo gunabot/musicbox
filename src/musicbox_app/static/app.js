@@ -22,6 +22,7 @@
     libSearch: '',
     sliderEditing: false,
     sliderDirty: false,
+    volumeSliderEditing: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -415,6 +416,15 @@
       if (slider && !state.sliderDirty && !state.sliderEditing) {
         slider.value = String(speed);
         setText('led-speed-value', speed);
+      }
+    }
+
+    const volumePerTurn = snapshot.settings && snapshot.settings.rotary_volume_per_turn;
+    if (volumePerTurn != null) {
+      const slider = $('rotary-volume-per-turn');
+      if (slider && !state.volumeSliderEditing) {
+        slider.value = String(volumePerTurn);
+        setText('rotary-volume-per-turn-value', volumePerTurn);
       }
     }
 
@@ -1466,25 +1476,35 @@
     toast(`Cached: ${payload.cached_path || target}`);
   }
 
-  async function saveLedSpeed() {
-    const value = Number($('led-speed').value || 25);
+  async function saveRotarySettings() {
+    const ledSpeed = Number($('led-speed').value || 25);
+    const volumePerTurn = Number($('rotary-volume-per-turn').value || 100);
     const payload = await apiFetch('/api/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ rotary_led_step_ms: value }),
+      body: JSON.stringify({
+        rotary_led_step_ms: ledSpeed,
+        rotary_volume_per_turn: volumePerTurn,
+      }),
     });
     if (payload.settings && payload.settings.rotary_led_step_ms != null) {
       $('led-speed').value = String(payload.settings.rotary_led_step_ms);
       setText('led-speed-value', payload.settings.rotary_led_step_ms);
     }
+    if (payload.settings && payload.settings.rotary_volume_per_turn != null) {
+      $('rotary-volume-per-turn').value = String(payload.settings.rotary_volume_per_turn);
+      setText('rotary-volume-per-turn-value', payload.settings.rotary_volume_per_turn);
+    }
     state.sliderDirty = false;
     state.sliderEditing = false;
+    state.volumeSliderEditing = false;
     renderSliderDirty();
     toast('Settings saved');
   }
 
   function bindSettings() {
     const slider = $('led-speed');
+    const volumeSlider = $('rotary-volume-per-turn');
     const spotifyClient = $('spotify-client-id');
     const spotifyDevice = $('spotify-device-name');
 
@@ -1500,7 +1520,7 @@
 
     slider.addEventListener('change', async () => {
       try {
-        await saveLedSpeed();
+        await saveRotarySettings();
       } catch (err) {
         toast(`Save settings failed: ${err.message}`, 'error');
       }
@@ -1512,10 +1532,30 @@
 
     $('save-settings').addEventListener('click', async () => {
       try {
-        await saveLedSpeed();
+        await saveRotarySettings();
       } catch (err) {
         toast(`Save settings failed: ${err.message}`, 'error');
       }
+    });
+
+    volumeSlider.addEventListener('pointerdown', () => {
+      state.volumeSliderEditing = true;
+    });
+
+    volumeSlider.addEventListener('input', (event) => {
+      setText('rotary-volume-per-turn-value', event.target.value);
+    });
+
+    volumeSlider.addEventListener('change', async () => {
+      try {
+        await saveRotarySettings();
+      } catch (err) {
+        toast(`Save settings failed: ${err.message}`, 'error');
+      }
+    });
+
+    volumeSlider.addEventListener('blur', () => {
+      state.volumeSliderEditing = false;
     });
 
     spotifyClient.addEventListener('input', () => {

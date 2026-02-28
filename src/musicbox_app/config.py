@@ -41,7 +41,10 @@ ROT_DT = 6
 ROT_SW = 13
 
 RFID_NAME_HINTS = ('SYC ID&IC USB Reader', 'Sycreader')
-DEFAULT_SETTINGS = {'rotary_led_step_ms': 25}
+DEFAULT_SETTINGS = {
+    'rotary_led_step_ms': 25,
+    'rotary_volume_per_turn': 100,
+}
 EVENTS_MAX = 400
 
 MEDIA_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac'}

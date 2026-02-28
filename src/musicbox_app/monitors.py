@@ -36,6 +36,8 @@ _REG_POWER = 0x03
 _REG_CURRENT = 0x04
 _REG_CALIBRATION = 0x05
 _CALIBRATION_VALUE = 4096
+# Number of detent events we observe for one 360-degree encoder turn.
+_ROTARY_STEPS_PER_TURN = 24.0
 
 
 def _detect_audio_device() -> Optional[str]:
@@ -181,6 +183,12 @@ def _read_system_metrics() -> Dict[str, Any]:
     return metrics
 
 
+def _rotary_volume_delta(store: AppStore) -> float:
+    per_turn = store.get_setting('rotary_volume_per_turn', 100)
+    per_turn = max(20, min(300, per_turn))
+    return max(0.5, min(20.0, float(per_turn) / _ROTARY_STEPS_PER_TURN))
+
+
 def _input_worker(store: AppStore, player: PlayerManager) -> None:
     trans = {
         (0, 1): +1,
@@ -267,15 +275,17 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     last_state = state
 
                     if accum >= 4:
+                        volume_delta = _rotary_volume_delta(store)
                         store.set_rotary(direction='CCW', pos_delta=-1)
                         store.add_event('ROTARY CCW')
-                        player.add_volume(-3)
+                        player.add_volume(-volume_delta)
                         rotary_led_sweep('CCW', buttons)
                         accum = 0
                     elif accum <= -4:
+                        volume_delta = _rotary_volume_delta(store)
                         store.set_rotary(direction='CW', pos_delta=1)
                         store.add_event('ROTARY CW')
-                        player.add_volume(+3)
+                        player.add_volume(+volume_delta)
                         rotary_led_sweep('CW', buttons)
                         accum = 0
 

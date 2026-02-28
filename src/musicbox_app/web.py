@@ -186,12 +186,21 @@ def create_app() -> Flask:
     def api_settings_set():
         data: Dict[str, Any] = request.get_json(force=True, silent=True) or {}
         try:
+            changed = False
             if 'rotary_led_step_ms' in data:
                 value = int(data['rotary_led_step_ms'])
                 value = max(5, min(250, value))
                 store.set_setting('rotary_led_step_ms', value)
-                store.save_settings()
                 store.add_event(f'SET rotary_led_step_ms={value}')
+                changed = True
+            if 'rotary_volume_per_turn' in data:
+                value = int(data['rotary_volume_per_turn'])
+                value = max(20, min(300, value))
+                store.set_setting('rotary_volume_per_turn', value)
+                store.add_event(f'SET rotary_volume_per_turn={value}')
+                changed = True
+            if changed:
+                store.save_settings()
             snapshot = store.snapshot(since_id=0, event_limit=1)
             return jsonify({'ok': True, 'settings': snapshot['settings']})
         except Exception as exc:
