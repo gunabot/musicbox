@@ -91,7 +91,7 @@ class MusicboxPersistence:
         path.replace(archived)
         return True
 
-    def migrate_legacy_json(self, *, archive: bool = True) -> Dict[str, int]:
+    def migrate_legacy_json(self, *, archive: bool = False) -> Dict[str, int]:
         stats = {
             'settings_upserts': 0,
             'mappings_upserts': 0,

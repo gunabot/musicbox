@@ -22,7 +22,7 @@ Last updated: 2026-03-01
 - Import worker (`scripts/spotify-cache-fetch`) receives an access token and runs in read-only token mode.
 - This avoids refresh-token write races between multiple processes.
 - OAuth state is persisted in SQLite (`config/musicbox.db`).
-- Legacy JSON OAuth state is auto-migrated on startup and archived.
+- Legacy JSON OAuth state is auto-migrated on startup (non-destructive by default).
 
 ## Endpoints used by Musicbox
 - OAuth:

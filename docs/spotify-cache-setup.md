@@ -16,7 +16,7 @@ See also:
 - Default fetch script: `scripts/spotify-cache-fetch` (Spotify Web API + librespot + ffmpeg)
 - Capture/import jobs are serialized by a single worker queue (one active Spotify capture/import job at a time).
 - Settings/mappings/OAuth are also stored in SQLite.
-- Legacy JSON files are auto-migrated to SQLite on startup and archived as `*.legacy-migrated-<timestamp>.json`.
+- Legacy JSON files are auto-migrated to SQLite on startup (non-destructive by default).
 
 ## Install dependencies
 ```bash
