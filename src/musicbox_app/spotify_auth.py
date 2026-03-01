@@ -345,6 +345,29 @@ class SpotifyAuthManager:
                             'expires_at': int(probe.get('expires_at', 0) or 0),
                         }
 
+                    # If refresh is revoked but we still hold a valid access
+                    # token, keep using it until natural expiry.
+                    fallback_access = str(latest.get('access_token', '') or payload.get('access_token', '')).strip()
+                    fallback_expires = int(
+                        latest.get('expires_at', 0) or payload.get('expires_at', 0) or 0
+                    )
+                    now = self._now()
+                    if fallback_access and fallback_expires > now + 10:
+                        keep = dict(latest if isinstance(latest, dict) else payload)
+                        keep['access_token'] = fallback_access
+                        keep['expires_at'] = fallback_expires
+                        keep.pop('refresh_token', None)
+                        keep['updated_at'] = now
+                        self._save(keep)
+                        self.store.add_event(
+                            'SPOTIFY_REFRESH_REVOKED using access token until expiry',
+                            level='warning',
+                        )
+                        return {
+                            'access_token': fallback_access,
+                            'expires_at': fallback_expires,
+                        }
+
                     for key in ['access_token', 'refresh_token', 'expires_at', 'token_type', 'scope', 'profile', 'pending']:
                         payload.pop(key, None)
                     payload['updated_at'] = self._now()
