@@ -28,9 +28,11 @@ CACHE_EXTENSION = {
     'ogg': '.ogg',
 }
 KNOWN_AUDIO_SUFFIXES = {'.mp3', '.flac', '.ogg', '.m4a', '.aac'}
+KNOWN_IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.webp'}
 MANIFEST_NAME = '.spotify-import.json'
 IMPORTING_DIR_NAME = '.importing'
 MIN_VALID_BYTES = 20000
+MIN_VALID_IMAGE_BYTES = 1024
 PCM_SAMPLE_RATE = 44100
 PCM_CHANNELS = 2
 PCM_BYTES_PER_SAMPLE = 2
@@ -161,6 +163,143 @@ def list_artist_names(raw_list: Any) -> List[str]:
         if name:
             artists.append(name)
     return artists
+
+
+def _coerce_nonnegative_int(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        return 0
+    return parsed if parsed > 0 else 0
+
+
+def select_best_image_url(raw_images: Any) -> str:
+    best_url = ''
+    best_score = -1
+    for raw in raw_images or []:
+        if not isinstance(raw, dict):
+            continue
+        url = str(raw.get('url', '')).strip()
+        if not url:
+            continue
+        width = _coerce_nonnegative_int(raw.get('width'))
+        height = _coerce_nonnegative_int(raw.get('height'))
+        score = width * height if width and height else max(width, height, 0)
+        if score > best_score:
+            best_url = url
+            best_score = score
+    return best_url
+
+
+def detect_image_extension(url: str, content_type: str) -> str:
+    ct = str(content_type or '').strip().lower()
+    if 'image/png' in ct:
+        return '.png'
+    if 'image/webp' in ct:
+        return '.webp'
+    if 'image/jpeg' in ct or 'image/jpg' in ct:
+        return '.jpg'
+
+    path = urllib.parse.urlparse(str(url or '')).path.lower()
+    if path.endswith('.png'):
+        return '.png'
+    if path.endswith('.webp'):
+        return '.webp'
+    if path.endswith('.jpeg') or path.endswith('.jpg'):
+        return '.jpg'
+    return '.jpg'
+
+
+def _download_image_bytes(url: str, *, timeout: int = 20) -> Tuple[bytes, str]:
+    req = urllib.request.Request(
+        url=str(url).strip(),
+        method='GET',
+        headers={'User-Agent': 'musicbox-spotify-cache/1.0'},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        content = resp.read()
+        content_type = str(resp.headers.get('Content-Type', '')).strip()
+    return content, content_type
+
+
+def download_cover_art_file(target_folder: Path, image_url: str, *, basename: str = 'cover') -> str:
+    url = str(image_url or '').strip()
+    if not url:
+        return ''
+
+    transient_statuses = {429, 500, 502, 503, 504}
+    delay_s = 1.0
+    last_error = ''
+    payload: bytes = b''
+    content_type = ''
+
+    for attempt in range(1, 4):
+        try:
+            payload, content_type = _download_image_bytes(url, timeout=20)
+            if len(payload) < MIN_VALID_IMAGE_BYTES:
+                last_error = f'image payload too small ({len(payload)} bytes)'
+            elif content_type and not content_type.lower().startswith('image/'):
+                last_error = f'non-image content type: {content_type}'
+            else:
+                ext = detect_image_extension(url, content_type)
+                final_name = f'{basename}{ext}'
+                final_path = target_folder / final_name
+                tmp_path = target_folder / f'.{final_name}.tmp'
+                target_folder.mkdir(parents=True, exist_ok=True)
+                tmp_path.write_bytes(payload)
+                tmp_path.replace(final_path)
+                for other_ext in KNOWN_IMAGE_SUFFIXES:
+                    candidate = target_folder / f'{basename}{other_ext}'
+                    if candidate == final_path:
+                        continue
+                    try:
+                        if candidate.exists():
+                            candidate.unlink()
+                    except Exception:
+                        pass
+                return final_name
+        except urllib.error.HTTPError as exc:
+            code = int(exc.code)
+            last_error = f'http {code}'
+            if code in transient_statuses and attempt < 3:
+                time.sleep(delay_s)
+                delay_s = min(8.0, delay_s * 1.8)
+                continue
+            return ''
+        except Exception as exc:
+            last_error = str(exc)
+            if attempt < 3:
+                time.sleep(delay_s)
+                delay_s = min(8.0, delay_s * 1.8)
+                continue
+            return ''
+
+    if last_error:
+        print(f'cover download warning: {last_error}', file=sys.stderr)
+    return ''
+
+
+def find_existing_cover_file(target_folder: Path, *, basename: str = 'cover') -> str:
+    for ext in ('.jpg', '.jpeg', '.png', '.webp'):
+        candidate = target_folder / f'{basename}{ext}'
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        try:
+            if candidate.stat().st_size >= MIN_VALID_IMAGE_BYTES:
+                return candidate.name
+        except Exception:
+            continue
+    return ''
+
+
+def ensure_cover_art(target_folder: Path, metadata: Dict[str, Any], *, basename: str = 'cover') -> str:
+    existing = find_existing_cover_file(target_folder, basename=basename)
+    if existing:
+        return existing
+    image_url = str(metadata.get('cover_url', '')).strip()
+    if not image_url:
+        return ''
+    return download_cover_art_file(target_folder, image_url, basename=basename)
 
 
 def is_valid_audio_file(path: Path) -> bool:
@@ -432,6 +571,7 @@ def resolve_tracks(session: SpotifySession, spotify_uri: str) -> Tuple[str, Dict
             'title': track['name'],
             'primary_artist': (track['artists'][0] if track['artists'] else 'Unknown Artist'),
             'year': extract_year(str(((track_payload.get('album') or {}) or {}).get('release_date', ''))),
+            'cover_url': select_best_image_url(((track_payload.get('album') or {}) or {}).get('images')),
         }
         return media_type, metadata, tracks
 
@@ -455,11 +595,12 @@ def resolve_tracks(session: SpotifySession, spotify_uri: str) -> Tuple[str, Dict
             'title': title,
             'album_artist': album_artist,
             'year': year,
+            'cover_url': select_best_image_url(album.get('images')),
         }
         return media_type, metadata, tracks
 
     if media_type == 'playlist':
-        playlist = session.request('GET', f'/playlists/{media_id}', params={'fields': 'name,snapshot_id'})
+        playlist = session.request('GET', f'/playlists/{media_id}', params={'fields': 'name,snapshot_id,images'})
         title = str(playlist.get('name', '')).strip() or media_id
         snapshot_id = str(playlist.get('snapshot_id', '')).strip()
 
@@ -476,6 +617,7 @@ def resolve_tracks(session: SpotifySession, spotify_uri: str) -> Tuple[str, Dict
         metadata = {
             'title': title,
             'snapshot_id': snapshot_id,
+            'cover_url': select_best_image_url(playlist.get('images')),
         }
         return media_type, metadata, tracks
 
@@ -793,6 +935,7 @@ def finalize_single_import(
     import_root: Path,
     media_dir: Path,
     track: Dict[str, Any],
+    metadata: Dict[str, Any],
     session: SpotifySession,
     device_name: str,
     librespot_bin: str,
@@ -804,6 +947,7 @@ def finalize_single_import(
     final_path = singles_dir / build_track_filename(track, 1, 1, extension, numbered=False)
 
     if is_valid_audio_file(final_path):
+        ensure_cover_art(final_path.parent, metadata, basename=final_path.stem)
         return to_relative(final_path, media_dir)
 
     temp_root = import_root / IMPORTING_DIR_NAME / f'spotify-{int(time.time())}-{os.getpid()}-track'
@@ -829,6 +973,7 @@ def finalize_single_import(
         if final_path.exists():
             final_path.unlink()
         result_path.rename(final_path)
+        ensure_cover_art(final_path.parent, metadata, basename=final_path.stem)
         return to_relative(final_path, media_dir)
     finally:
         cleanup_dir(temp_root)
@@ -908,6 +1053,7 @@ def finalize_collection_import(
     existing_manifest = read_manifest(final_dir)
 
     if all_expected_files_present(final_dir, expected_files):
+        existing_cover = ensure_cover_art(final_dir, metadata, basename='cover')
         if media_type == 'playlist':
             cached_snapshot = str(existing_manifest.get('snapshot_id', '')).strip()
             latest_snapshot = str(metadata.get('snapshot_id', '')).strip()
@@ -941,6 +1087,8 @@ def finalize_collection_import(
         if not all_expected_files_present(work_dir, expected_files):
             fail(f'Import incomplete for {spotify_uri}')
 
+        cover_file = ensure_cover_art(work_dir, metadata, basename='cover')
+
         manifest_tracks = []
         for index, track in enumerate(tracks, start=1):
             manifest_tracks.append({
@@ -964,6 +1112,8 @@ def finalize_collection_import(
             manifest_payload['year'] = str(metadata.get('year', '')).strip()
         if media_type == 'playlist':
             manifest_payload['snapshot_id'] = str(metadata.get('snapshot_id', '')).strip()
+        if cover_file:
+            manifest_payload['cover_file'] = cover_file
 
         write_manifest(work_dir, manifest_payload)
 
@@ -1005,6 +1155,7 @@ def main() -> None:
             import_root=import_root,
             media_dir=media_dir,
             track=tracks[0],
+            metadata=metadata,
             session=session,
             device_name=device_name,
             librespot_bin=librespot_bin,
