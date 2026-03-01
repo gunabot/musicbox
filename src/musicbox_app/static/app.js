@@ -20,6 +20,10 @@
     libKind: 'all',
     libMapped: 'all',
     libSearch: '',
+    spotifyResults: [],
+    spotifyJobs: [],
+    spotifySearchQuery: '',
+    spotifySearchType: 'track,album,playlist',
   };
 
   const $ = (id) => document.getElementById(id);
@@ -80,8 +84,28 @@
   function setText(id, value) {
     const el = $(id);
     if (el) {
-      el.textContent = value == null || value === '' ? '-' : String(value);
+      const next = value == null || value === '' ? '-' : String(value);
+      if (el.textContent === next) {
+        return;
+      }
+      if (hasActiveSelectionInElement(el)) {
+        return;
+      }
+      el.textContent = next;
     }
+  }
+
+  function hasActiveSelectionInElement(el) {
+    if (!el || !window.getSelection) {
+      return false;
+    }
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      return false;
+    }
+    const anchor = selection.anchorNode;
+    const focus = selection.focusNode;
+    return (anchor && el.contains(anchor)) || (focus && el.contains(focus));
   }
 
   function formatBytes(bytes) {
@@ -142,7 +166,7 @@
         return;
       }
       const prefs = JSON.parse(raw);
-      state.activeTab = ['now', 'library', 'cards', 'hardware', 'settings', 'events'].includes(prefs.activeTab)
+      state.activeTab = ['now', 'library', 'spotify', 'cards', 'hardware', 'settings', 'events'].includes(prefs.activeTab)
         ? prefs.activeTab
         : 'now';
       state.currentDir = normalizeRel(prefs.currentDir);
@@ -150,6 +174,10 @@
       state.libKind = ['all', 'files', 'dirs'].includes(prefs.libKind) ? prefs.libKind : 'all';
       state.libMapped = ['all', 'mapped', 'unmapped'].includes(prefs.libMapped) ? prefs.libMapped : 'all';
       state.libSearch = String(prefs.libSearch || '');
+      state.spotifySearchQuery = String(prefs.spotifySearchQuery || '');
+      state.spotifySearchType = ['track,album,playlist', 'track', 'album', 'playlist'].includes(prefs.spotifySearchType)
+        ? prefs.spotifySearchType
+        : 'track,album,playlist';
 
       const expanded = Array.isArray(prefs.expandedDirs) ? prefs.expandedDirs.map(normalizeRel) : [];
       state.expandedDirs = new Set(['', ...expanded]);
@@ -166,6 +194,8 @@
       libKind: $('lib-kind') ? $('lib-kind').value : state.libKind,
       libMapped: $('lib-mapped') ? $('lib-mapped').value : state.libMapped,
       libSearch: $('lib-search') ? $('lib-search').value : state.libSearch,
+      spotifySearchQuery: $('spotify-search-query') ? $('spotify-search-query').value : state.spotifySearchQuery,
+      spotifySearchType: $('spotify-search-type') ? $('spotify-search-type').value : state.spotifySearchType,
       expandedDirs: Array.from(state.expandedDirs.values()),
     };
     try {
@@ -240,6 +270,9 @@
 
     const logEl = $('events-log');
     if (logEl) {
+      if (hasActiveSelectionInElement(logEl)) {
+        return;
+      }
       logEl.textContent = state.events.join('\n');
       logEl.scrollTop = logEl.scrollHeight;
     }
@@ -428,6 +461,10 @@
       state.spotify = snapshot.spotify;
       renderSpotifyStatus(snapshot.spotify);
     }
+    if (Array.isArray(snapshot.spotify_jobs)) {
+      state.spotifyJobs = snapshot.spotify_jobs;
+      renderSpotifyJobs();
+    }
 
     appendEvents(snapshot.events || []);
   }
@@ -436,6 +473,9 @@
     state.snapshot = payload;
     if (payload && payload.spotify) {
       state.spotify = payload.spotify;
+    }
+    if (payload && Array.isArray(payload.spotify_jobs)) {
+      state.spotifyJobs = payload.spotify_jobs;
     }
     renderStatus(payload);
   }
@@ -451,15 +491,20 @@
     if (persist) {
       saveUiPrefs();
     }
+    if (tabName === 'spotify') {
+      void refreshSpotifyJobs().catch(() => {});
+    }
   }
 
   function setSelectedPath(path) {
     state.selectedPath = normalizeRel(path);
-    setText('map-selected', state.selectedPath || 'No library item selected');
     if (state.selectedPath) {
       $('move-dst').value = basename(state.selectedPath);
+    } else {
+      $('move-dst').value = '';
     }
     renderLibrary();
+    updateLibrarySelectionUi();
     saveUiPrefs();
   }
 
@@ -637,6 +682,31 @@
     return map;
   }
 
+  function getSelectedEntry() {
+    return state.entries.find((entry) => entry.path === state.selectedPath) || null;
+  }
+
+  async function playPath(path) {
+    await apiFetch('/api/play', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ file: path }),
+    });
+  }
+
+  function updateLibrarySelectionUi() {
+    const selected = getSelectedEntry();
+    setText('lib-current-dir', state.currentDir ? `/media/${state.currentDir}` : '/media');
+    setText('lib-selected-path', selected ? selected.path : 'none');
+    setText('map-selected', state.selectedPath || 'No library item selected');
+    setDisabled('lib-up-btn', !state.currentDir, 'Already at media root');
+
+    setDisabled('lib-open-selected', !selected || selected.type !== 'dir', 'Select a folder first');
+    setDisabled('lib-play-selected', !selected, 'Select a file or folder first');
+    setDisabled('lib-map-selected', !selected, 'Select a file or folder first');
+    setDisabled('lib-delete-selected', !selected, 'Select a file or folder first');
+  }
+
   async function confirmDelete(path) {
     const payload = await apiFetch(`/api/pathinfo?path=${encodeURIComponent(path)}`);
     const info = payload.info || {};
@@ -699,19 +769,34 @@
       }
 
       const tr = document.createElement('tr');
+      tr.classList.add('clickable-row');
       if (entry.path === state.selectedPath) {
         tr.classList.add('selected');
       }
+
+      const nameTd = document.createElement('td');
+      const title = document.createElement('div');
+      title.className = 'cell-title';
+      const icon = document.createElement('span');
+      icon.className = 'item-icon';
+      icon.textContent = entry.type === 'dir' ? '[DIR]' : '[FILE]';
+      const name = document.createElement('span');
+      name.textContent = entry.name;
+      title.appendChild(icon);
+      title.appendChild(name);
+      nameTd.appendChild(title);
+      tr.appendChild(nameTd);
 
       const typeTd = document.createElement('td');
       typeTd.textContent = entry.type;
       tr.appendChild(typeTd);
 
-      const nameTd = document.createElement('td');
-      nameTd.textContent = entry.name;
-      tr.appendChild(nameTd);
+      const sizeTd = document.createElement('td');
+      sizeTd.textContent = entry.type === 'file' ? formatBytes(entry.size_bytes) : '-';
+      tr.appendChild(sizeTd);
 
       const pathTd = document.createElement('td');
+      pathTd.className = 'cell-mono';
       pathTd.textContent = entry.path;
       tr.appendChild(pathTd);
 
@@ -719,72 +804,33 @@
       mapTd.textContent = mappedCards.join(', ') || '-';
       tr.appendChild(mapTd);
 
-      const actionsTd = document.createElement('td');
-      actionsTd.className = 'actions';
-
-      const playBtn = document.createElement('button');
-      playBtn.textContent = 'Play';
-      playBtn.addEventListener('click', async () => {
-        try {
-          await apiFetch('/api/play', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file: entry.path }),
-          });
-          toast(`Playing ${entry.path}`);
-        } catch (err) {
-          toast(`Play failed: ${err.message}`, 'error');
-        }
-      });
-      actionsTd.appendChild(playBtn);
-
-      if (entry.type === 'dir') {
-        const openBtn = document.createElement('button');
-        openBtn.textContent = 'Open';
-        openBtn.addEventListener('click', () => {
-          void setCurrentDir(entry.path);
-        });
-        actionsTd.appendChild(openBtn);
-      }
-
-      const selectBtn = document.createElement('button');
-      selectBtn.textContent = 'Select';
-      selectBtn.addEventListener('click', () => {
+      tr.addEventListener('click', () => {
         setSelectedPath(entry.path);
       });
-      actionsTd.appendChild(selectBtn);
-
-      const mapBtn = document.createElement('button');
-      mapBtn.textContent = 'Map';
-      mapBtn.addEventListener('click', () => {
+      tr.addEventListener('dblclick', async () => {
         setSelectedPath(entry.path);
-        $('map-type').value = 'local';
-        $('map-target').value = entry.path;
-        activateTab('cards');
-      });
-      actionsTd.appendChild(mapBtn);
-
-      const delBtn = document.createElement('button');
-      delBtn.textContent = 'Delete';
-      delBtn.className = 'danger';
-      delBtn.addEventListener('click', async () => {
         try {
-          await deleteEntry(entry.path);
+          if (entry.type === 'dir') {
+            await setCurrentDir(entry.path);
+          } else {
+            await playPath(entry.path);
+            toast(`Playing ${entry.path}`);
+          }
         } catch (err) {
-          toast(`Delete failed: ${err.message}`, 'error');
+          toast(`Open failed: ${err.message}`, 'error');
         }
       });
-      actionsTd.appendChild(delBtn);
 
-      tr.appendChild(actionsTd);
       tbody.appendChild(tr);
     }
+
+    updateLibrarySelectionUi();
   }
 
   async function loadLibrary() {
     const query = ($('lib-search').value || '').trim();
     const kind = ($('lib-kind').value || 'all').trim();
-    const recursive = query ? '1' : '0';
+    const recursive = '0';
 
     try {
       const payload = await apiFetch(
@@ -1023,6 +1069,7 @@
     state.currentDir = normalizeRel(path);
     state.expandedDirs = new Set([...state.expandedDirs, ...ancestors(state.currentDir)]);
     $('target-dir').value = state.currentDir;
+    updateLibrarySelectionUi();
     await ensureTreePathLoaded(state.currentDir);
     renderTree();
     renderBreadcrumb();
@@ -1148,6 +1195,14 @@
   }
 
   function bindLibrary() {
+    $('lib-up-btn').addEventListener('click', async () => {
+      try {
+        await setCurrentDir(parentPath(state.currentDir));
+      } catch (err) {
+        toast(`Failed to go up: ${err.message}`, 'error');
+      }
+    });
+
     $('lib-refresh').addEventListener('click', async () => {
       try {
         await refreshTree();
@@ -1172,6 +1227,58 @@
     $('lib-mapped').addEventListener('change', () => {
       renderLibrary();
       saveUiPrefs();
+    });
+
+    $('lib-open-selected').addEventListener('click', async () => {
+      const selected = getSelectedEntry();
+      if (!selected || selected.type !== 'dir') {
+        toast('Select a folder first', 'warning');
+        return;
+      }
+      try {
+        await setCurrentDir(selected.path);
+      } catch (err) {
+        toast(`Open failed: ${err.message}`, 'error');
+      }
+    });
+
+    $('lib-play-selected').addEventListener('click', async () => {
+      const selected = getSelectedEntry();
+      if (!selected) {
+        toast('Select a file or folder first', 'warning');
+        return;
+      }
+      try {
+        await playPath(selected.path);
+        toast(`Playing ${selected.path}`);
+      } catch (err) {
+        toast(`Play failed: ${err.message}`, 'error');
+      }
+    });
+
+    $('lib-map-selected').addEventListener('click', () => {
+      const selected = getSelectedEntry();
+      if (!selected) {
+        toast('Select a file or folder first', 'warning');
+        return;
+      }
+      $('map-type').value = 'local';
+      $('map-target').value = selected.path;
+      activateTab('cards');
+      toast('Selected item copied to card mapping');
+    });
+
+    $('lib-delete-selected').addEventListener('click', async () => {
+      const selected = getSelectedEntry();
+      if (!selected) {
+        toast('Select a file or folder first', 'warning');
+        return;
+      }
+      try {
+        await deleteEntry(selected.path);
+      } catch (err) {
+        toast(`Delete failed: ${err.message}`, 'error');
+      }
     });
 
     $('lib-search').addEventListener('keydown', async (event) => {
@@ -1267,6 +1374,8 @@
         queueFiles(files);
       }
     });
+
+    updateLibrarySelectionUi();
   }
 
   function bindCards() {
@@ -1464,6 +1573,308 @@
     toast(`Cached: ${payload.cached_path || target}`);
   }
 
+  function formatDurationMs(durationMs) {
+    if (!durationMs || Number.isNaN(Number(durationMs))) {
+      return '-';
+    }
+    const total = Math.max(0, Math.floor(Number(durationMs) / 1000));
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
+    return `${mins}:${String(secs).padStart(2, '0')}`;
+  }
+
+  function spotifyUriToWebUrl(uri) {
+    const raw = String(uri || '').trim();
+    if (!raw) {
+      return '';
+    }
+    if (raw.startsWith('https://open.spotify.com/')) {
+      return raw;
+    }
+    if (!raw.startsWith('spotify:')) {
+      return '';
+    }
+    const parts = raw.split(':');
+    if (parts.length < 3) {
+      return '';
+    }
+    const type = String(parts[1] || '').trim();
+    const id = String(parts[2] || '').trim();
+    if (!type || !id) {
+      return '';
+    }
+    return `https://open.spotify.com/${encodeURIComponent(type)}/${encodeURIComponent(id)}`;
+  }
+
+  function spotifyArtFallbackLabel(type) {
+    const kind = String(type || '').toLowerCase();
+    if (kind === 'track') {
+      return 'Track';
+    }
+    if (kind === 'album') {
+      return 'Album';
+    }
+    if (kind === 'playlist') {
+      return 'List';
+    }
+    return 'Audio';
+  }
+
+  function renderSpotifyResults() {
+    const tbody = $('spotify-results-body');
+    if (!tbody) {
+      return;
+    }
+    tbody.textContent = '';
+
+    if (!state.spotifyResults.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 7;
+      td.className = 'muted';
+      td.textContent = 'No search results yet.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
+    for (const item of state.spotifyResults) {
+      const tr = document.createElement('tr');
+
+      const kind = String(item.type || '').trim().toLowerCase() || '-';
+      const title = String(item.name || '').trim() || '-';
+      const subtitle = String(item.subtitle || '').trim();
+      const album = String(item.album || '').trim();
+      const duration = item.duration_ms ? formatDurationMs(item.duration_ms) : '-';
+      const uri = String(item.uri || '').trim();
+      const imageUrl = String(item.image || '').trim();
+
+      const artTd = document.createElement('td');
+      artTd.className = 'spotify-art-cell';
+      if (imageUrl) {
+        const img = document.createElement('img');
+        img.className = 'spotify-art';
+        img.src = imageUrl;
+        img.alt = `${title} cover`;
+        img.loading = 'lazy';
+        img.decoding = 'async';
+        artTd.appendChild(img);
+      } else {
+        const fallback = document.createElement('span');
+        fallback.className = 'spotify-art-fallback';
+        fallback.textContent = spotifyArtFallbackLabel(kind);
+        artTd.appendChild(fallback);
+      }
+      tr.appendChild(artTd);
+
+      const titleTd = document.createElement('td');
+      titleTd.className = 'spotify-title-cell';
+      const titleMain = document.createElement('div');
+      titleMain.className = 'spotify-title-main';
+      titleMain.textContent = title;
+      titleMain.title = title;
+      titleTd.appendChild(titleMain);
+
+      if (uri) {
+        const uriLine = document.createElement('div');
+        uriLine.className = 'spotify-uri-line cell-mono';
+        uriLine.textContent = uri;
+        uriLine.title = uri;
+        titleTd.appendChild(uriLine);
+      }
+      tr.appendChild(titleTd);
+
+      const artistTd = document.createElement('td');
+      artistTd.className = 'spotify-col-artist';
+      artistTd.textContent = subtitle || '-';
+      artistTd.title = subtitle || '';
+      tr.appendChild(artistTd);
+
+      const albumTd = document.createElement('td');
+      albumTd.className = 'spotify-col-album';
+      albumTd.textContent = album || '-';
+      albumTd.title = album || '';
+      tr.appendChild(albumTd);
+
+      const durationTd = document.createElement('td');
+      durationTd.className = 'spotify-col-length';
+      durationTd.textContent = duration;
+      tr.appendChild(durationTd);
+
+      const typeTd = document.createElement('td');
+      typeTd.className = 'spotify-col-type';
+      typeTd.textContent = kind;
+      tr.appendChild(typeTd);
+
+      const actionsTd = document.createElement('td');
+      actionsTd.className = 'actions';
+
+      const cacheBtn = document.createElement('button');
+      const refreshPlaylist = kind === 'playlist';
+      cacheBtn.textContent = refreshPlaylist ? 'Sync Playlist' : 'Add To Library';
+      cacheBtn.addEventListener('click', async () => {
+        try {
+          await queueSpotifyCacheJob(uri, { refresh: refreshPlaylist });
+        } catch (err) {
+          toast(`Queue failed: ${err.message}`, 'error');
+        }
+      });
+      actionsTd.appendChild(cacheBtn);
+
+      const openUrl = spotifyUriToWebUrl(uri);
+      if (openUrl) {
+        const openBtn = document.createElement('button');
+        openBtn.textContent = 'Open';
+        openBtn.addEventListener('click', () => {
+          window.open(openUrl, '_blank', 'noopener,noreferrer');
+        });
+        actionsTd.appendChild(openBtn);
+      }
+
+      tr.appendChild(actionsTd);
+
+      tbody.appendChild(tr);
+    }
+  }
+
+  function renderSpotifyJobs() {
+    const tbody = $('spotify-jobs-body');
+    if (!tbody) {
+      return;
+    }
+    tbody.textContent = '';
+    const jobs = Array.isArray(state.spotifyJobs) ? state.spotifyJobs : [];
+    if (!jobs.length) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 5;
+      td.className = 'muted';
+      td.textContent = 'No cache jobs yet.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
+    for (const job of jobs) {
+      const tr = document.createElement('tr');
+
+      const statusTd = document.createElement('td');
+      const pill = document.createElement('span');
+      const status = String(job.status || 'queued').toLowerCase();
+      pill.className = `spotify-job-status ${status}`;
+      pill.textContent = status;
+      statusTd.appendChild(pill);
+      tr.appendChild(statusTd);
+
+      const targetTd = document.createElement('td');
+      targetTd.className = 'cell-mono';
+      targetTd.textContent = job.target || '-';
+      tr.appendChild(targetTd);
+
+      const cachedTd = document.createElement('td');
+      cachedTd.className = 'cell-mono';
+      cachedTd.textContent = job.cached_path || '-';
+      tr.appendChild(cachedTd);
+
+      const updatedTd = document.createElement('td');
+      updatedTd.textContent = formatDateTime(job.updated_at);
+      tr.appendChild(updatedTd);
+
+      const errorTd = document.createElement('td');
+      errorTd.textContent = job.error || '-';
+      tr.appendChild(errorTd);
+
+      tbody.appendChild(tr);
+    }
+  }
+
+  async function refreshSpotifyJobs() {
+    const payload = await apiFetch('/api/spotify/jobs?limit=50');
+    state.spotifyJobs = payload.jobs || [];
+    renderSpotifyJobs();
+    return payload;
+  }
+
+  async function queueSpotifyCacheJob(target, options = {}) {
+    if (!target) {
+      throw new Error('spotify uri missing');
+    }
+    const refresh = Boolean(options.refresh);
+    const payload = await apiFetch('/api/spotify/cache', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, async: true, refresh }),
+    });
+    await refreshSpotifyJobs();
+    toast(refresh ? `Queued refresh: ${target}` : `Queued: ${target}`);
+    return payload;
+  }
+
+  async function searchSpotify() {
+    await refreshSpotifyStatus();
+    const caps = spotifyCapabilities(state.spotify || {});
+    if (!caps.ready) {
+      toast(caps.guidance, 'warning');
+      return;
+    }
+
+    const query = ($('spotify-search-query').value || '').trim();
+    if (!query) {
+      toast('Enter a Spotify search term first', 'warning');
+      return;
+    }
+    const type = ($('spotify-search-type').value || 'track,album,playlist').trim();
+    const payload = await apiFetch(
+      `/api/spotify/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(type)}&limit=12`
+    );
+    state.spotifySearchQuery = query;
+    state.spotifySearchType = type;
+    state.spotifyResults = payload.items || [];
+    renderSpotifyResults();
+    saveUiPrefs();
+  }
+
+  function bindSpotifyTab() {
+    $('spotify-search-query').value = state.spotifySearchQuery || '';
+    $('spotify-search-type').value = state.spotifySearchType || 'track,album,playlist';
+
+    $('spotify-search-query').addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter') {
+        return;
+      }
+      event.preventDefault();
+      void searchSpotify().catch((err) => toast(`Search failed: ${err.message}`, 'error'));
+    });
+    $('spotify-search-query').addEventListener('input', () => {
+      state.spotifySearchQuery = $('spotify-search-query').value || '';
+      saveUiPrefs();
+    });
+
+    $('spotify-search-btn').addEventListener('click', async () => {
+      try {
+        await searchSpotify();
+      } catch (err) {
+        toast(`Search failed: ${err.message}`, 'error');
+      }
+    });
+
+    $('spotify-jobs-refresh').addEventListener('click', async () => {
+      try {
+        await refreshSpotifyJobs();
+      } catch (err) {
+        toast(`Job refresh failed: ${err.message}`, 'error');
+      }
+    });
+
+    $('spotify-search-type').addEventListener('change', () => {
+      state.spotifySearchType = $('spotify-search-type').value || 'track,album,playlist';
+      saveUiPrefs();
+    });
+
+    renderSpotifyResults();
+    renderSpotifyJobs();
+  }
+
   async function saveRotarySettings() {
     const ledInput = $('led-speed');
     const volumeInput = $('rotary-volume-per-turn');
@@ -1585,6 +1996,7 @@
     bindTabs();
     bindControls();
     bindLibrary();
+    bindSpotifyTab();
     bindCards();
     bindSettings();
     bindEventsPanel();
@@ -1606,6 +2018,9 @@
       const statusPayload = await apiFetch('/api/status');
       applySnapshot(statusPayload);
       await refreshSpotifyStatus();
+      await refreshSpotifyJobs();
+      $('spotify-search-query').value = state.spotifySearchQuery || '';
+      $('spotify-search-type').value = state.spotifySearchType || 'track,album,playlist';
       activateTab(state.activeTab, false);
       saveUiPrefs();
     } catch (err) {

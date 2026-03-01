@@ -38,7 +38,7 @@ Map RFID cards to Spotify content (playlist/album/track) with reliable playback 
 ## Libraries/options
 - `spotipy` (fastest path, mature)
 - direct requests against Spotify Web API (less dependency)
-- `librespot` pipe backend for first-play capture into local FLAC
+- `librespot` pipe backend for first-play capture into local encoded audio (default MP3 192k)
 
 ## Risks / constraints
 - Spotify Premium required for full device playback control.

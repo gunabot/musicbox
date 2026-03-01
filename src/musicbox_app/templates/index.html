@@ -24,6 +24,7 @@
   <nav class="tabs" aria-label="Primary">
     <button data-tab="now" class="tab active">Now Playing</button>
     <button data-tab="library" class="tab">Library</button>
+    <button data-tab="spotify" class="tab">Spotify</button>
     <button data-tab="cards" class="tab">Cards</button>
     <button data-tab="hardware" class="tab">Hardware</button>
     <button data-tab="settings" class="tab">Settings</button>
@@ -87,7 +88,14 @@
 
           <div class="library-main">
             <div class="toolbar">
-              <input id="lib-search" placeholder="Search in current folder subtree">
+              <button id="lib-up-btn" class="ghost">Up</button>
+              <span class="muted">Current:</span>
+              <strong id="lib-current-dir" class="mono">/media</strong>
+              <span class="muted">Selected:</span>
+              <span id="lib-selected-path" class="mono muted">none</span>
+            </div>
+            <div class="toolbar">
+              <input id="lib-search" placeholder="Search in current folder">
               <select id="lib-kind">
                 <option value="all">All</option>
                 <option value="files">Files only</option>
@@ -99,6 +107,14 @@
                 <option value="unmapped">Unmapped only</option>
               </select>
               <button id="lib-refresh">Refresh</button>
+            </div>
+
+            <div class="toolbar">
+              <button id="lib-open-selected">Open Folder</button>
+              <button id="lib-play-selected">Play</button>
+              <button id="lib-map-selected">Map</button>
+              <button id="lib-delete-selected" class="danger">Delete</button>
+              <span class="muted">Tip: single-click select, double-click folder to open, double-click file to play.</span>
             </div>
 
             <div class="toolbar">
@@ -120,17 +136,64 @@
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>Type</th>
                   <th>Name</th>
+                  <th>Type</th>
+                  <th>Size</th>
                   <th>Path</th>
                   <th>Mapped Card</th>
-                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody id="library-body"></tbody>
             </table>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section id="tab-spotify" class="panel">
+      <div class="card">
+        <h2>Spotify Library Import</h2>
+        <p class="muted">Search with your connected Spotify account and add tracks/albums/playlists to local cache for future offline playback.</p>
+        <div class="toolbar">
+          <input id="spotify-search-query" placeholder="Search tracks, albums, playlists">
+          <select id="spotify-search-type">
+            <option value="track,album,playlist">All</option>
+            <option value="track">Tracks</option>
+            <option value="album">Albums</option>
+            <option value="playlist">Playlists</option>
+          </select>
+          <button id="spotify-search-btn" class="primary">Search Spotify</button>
+          <button id="spotify-jobs-refresh">Refresh Jobs</button>
+        </div>
+
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Title</th>
+              <th>Details</th>
+              <th>URI</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="spotify-results-body"></tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h3>Cache Jobs</h3>
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Target</th>
+              <th>Cached Path</th>
+              <th>Updated</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="spotify-jobs-body"></tbody>
+        </table>
       </div>
     </section>
 

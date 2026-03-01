@@ -45,6 +45,8 @@ cargo install --locked librespot --version 0.8.0
 - `MUSICBOX_SPOTIFY_FETCH_COMMAND` (default: `/home/musicbox/musicbox/scripts/spotify-cache-fetch`)
 - `MUSICBOX_SPOTIFY_OAUTH_PATH` (default: `/home/musicbox/musicbox/config/spotify_oauth.json`)
 - `MUSICBOX_SPOTIFY_CAPTURE_DEVICE_NAME` (default: `musicbox-capture`)
+- `MUSICBOX_SPOTIFY_CACHE_FORMAT` (default: `mp3`, options: `mp3|ogg|flac`)
+- `MUSICBOX_SPOTIFY_CACHE_BITRATE` (default: `192k`, examples: `128k`, `160k`, `192k`)
 
 ## Capture flow
 1. Card scan resolves `spotify:*` mapping
@@ -53,7 +55,7 @@ cargo install --locked librespot --version 0.8.0
    - fetch script resolves all tracks for URI using Spotify Web API
    - starts `librespot` pipe backend as temporary capture device
    - transfers playback to that device
-   - captures PCM from pipe using ffmpeg, stores FLAC files in cache
+   - captures PCM from pipe using ffmpeg, stores encoded files in cache (default: MP3 192k)
 4. Resolver returns cached local path
 5. MPV plays local path
 

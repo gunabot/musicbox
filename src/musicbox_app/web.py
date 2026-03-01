@@ -9,8 +9,10 @@ from flask import Flask, Response, jsonify, render_template, request, stream_wit
 from .config import (
     DEFAULT_SETTINGS,
     MEDIA_DIR,
+    SPOTIFY_CACHE_BITRATE,
     SPOTIFY_CAPTURE_DEVICE_NAME,
     SPOTIFY_CACHE_DIR,
+    SPOTIFY_CACHE_FORMAT,
     SPOTIFY_CACHE_INDEX_PATH,
     SPOTIFY_FETCH_COMMAND,
     SPOTIFY_OAUTH_PATH,
@@ -27,6 +29,7 @@ from .media import (
 from .monitors import start_background_monitors
 from .player import PlayerManager
 from .spotify_auth import SpotifyAuthManager
+from .spotify_jobs import SpotifyCacheJobManager
 from .store import AppStore
 
 
@@ -51,6 +54,13 @@ def _bool_query(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def _int_param(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 def create_app() -> Flask:
     ensure_media_root()
 
@@ -58,6 +68,7 @@ def create_app() -> Flask:
     store = AppStore()
     spotify_auth = SpotifyAuthManager(store)
     player = PlayerManager(store, spotify_auth)
+    spotify_jobs = SpotifyCacheJobManager(store, player.spotify_cache)
     start_background_monitors(store, player)
     store.add_event('musicbox service started')
 
@@ -69,7 +80,7 @@ def create_app() -> Flask:
     def api_status():
         since_id = _int_query('since', 0)
         snapshot = store.snapshot(since_id=since_id)
-        return jsonify({'ok': True, **snapshot, 'spotify': spotify_auth.status()})
+        return jsonify({'ok': True, **snapshot, 'spotify': spotify_auth.status(), 'spotify_jobs': spotify_jobs.list_jobs(limit=40)})
 
     @app.get('/api/stream')
     def api_stream():
@@ -79,6 +90,7 @@ def create_app() -> Flask:
             while True:
                 payload = store.snapshot(since_id=last_event_id)
                 payload['spotify'] = spotify_auth.status()
+                payload['spotify_jobs'] = spotify_jobs.list_jobs(limit=40)
                 events = payload.get('events', [])
                 if events:
                     last_event_id = int(events[-1]['id'])
@@ -272,12 +284,130 @@ def create_app() -> Flask:
         target = str(data.get('target', '')).strip()
         if not target:
             return _json_error('spotify target required')
+        refresh = bool(data.get('refresh', False))
         try:
             spotify_auth.get_access_token(force_refresh=False)
-            relpath = player.spotify_cache.resolve(target)
+            async_mode = bool(data.get('async', False))
+            if async_mode:
+                job = spotify_jobs.enqueue(target, refresh=refresh)
+                return jsonify({'ok': True, 'async': True, 'job': job})
+            relpath = player.spotify_cache.resolve(target, refresh=refresh)
             return jsonify({'ok': True, 'cached_path': relpath})
         except Exception as exc:
             store.add_event(f'SPOTIFY_CACHE_ERR {exc}', level='error')
+            return _json_error(str(exc))
+
+    @app.get('/api/spotify/jobs')
+    def api_spotify_jobs():
+        limit = max(1, min(200, _int_query('limit', 40)))
+        return jsonify({'ok': True, 'jobs': spotify_jobs.list_jobs(limit=limit)})
+
+    @app.get('/api/spotify/search')
+    def api_spotify_search():
+        query = str(request.args.get('q', '')).strip()
+        if not query:
+            return _json_error('query required')
+
+        raw_type = str(request.args.get('type', 'track,album,playlist')).strip().lower()
+        requested = [part.strip() for part in raw_type.split(',') if part.strip()]
+        allowed_types = ['track', 'album', 'playlist']
+        search_types = [item for item in requested if item in allowed_types] or ['track', 'album', 'playlist']
+        limit = max(1, min(25, _int_param(request.args.get('limit'), 12)))
+
+        try:
+            payload_status = spotify_auth.status()
+            market = (
+                str((payload_status.get('user') or {}).get('country', '')).strip().upper()
+                if isinstance(payload_status.get('user'), dict)
+                else ''
+            )
+            params: Dict[str, Any] = {
+                'q': query,
+                'type': ','.join(search_types),
+                'limit': limit,
+            }
+            if market:
+                params['market'] = market
+
+            status, payload = spotify_auth.spotify_api_request('GET', '/search', params=params)
+            if status >= 300:
+                return _json_error(payload.get('error', {}).get('message') or payload.get('error') or 'spotify search failed')
+
+            items: list[Dict[str, Any]] = []
+
+            for item in (payload.get('tracks') or {}).get('items', []) or []:
+                if not isinstance(item, dict):
+                    continue
+                artists = [
+                    str(artist.get('name', '')).strip()
+                    for artist in (item.get('artists') or [])
+                    if isinstance(artist, dict)
+                ]
+                artists = [artist for artist in artists if artist]
+                image = None
+                album = item.get('album') if isinstance(item.get('album'), dict) else {}
+                images = album.get('images') if isinstance(album.get('images'), list) else []
+                if images:
+                    first_image = images[0] if isinstance(images[0], dict) else {}
+                    image = str(first_image.get('url', '')).strip() or None
+                items.append({
+                    'type': 'track',
+                    'uri': str(item.get('uri', '')).strip(),
+                    'name': str(item.get('name', '')).strip(),
+                    'subtitle': ', '.join(artists) or str(album.get('name', '')).strip(),
+                    'album': str(album.get('name', '')).strip() or None,
+                    'duration_ms': _int_param(item.get('duration_ms'), 0) or None,
+                    'image': image,
+                })
+
+            for item in (payload.get('albums') or {}).get('items', []) or []:
+                if not isinstance(item, dict):
+                    continue
+                artists = [
+                    str(artist.get('name', '')).strip()
+                    for artist in (item.get('artists') or [])
+                    if isinstance(artist, dict)
+                ]
+                artists = [artist for artist in artists if artist]
+                images = item.get('images') if isinstance(item.get('images'), list) else []
+                first_image = images[0] if images and isinstance(images[0], dict) else {}
+                image = str(first_image.get('url', '')).strip()
+                items.append({
+                    'type': 'album',
+                    'uri': str(item.get('uri', '')).strip(),
+                    'name': str(item.get('name', '')).strip(),
+                    'subtitle': ', '.join(artists),
+                    'album': None,
+                    'duration_ms': None,
+                    'image': image or None,
+                })
+
+            for item in (payload.get('playlists') or {}).get('items', []) or []:
+                if not isinstance(item, dict):
+                    continue
+                owner = item.get('owner') if isinstance(item.get('owner'), dict) else {}
+                owner_name = str(owner.get('display_name', '')).strip() or str(owner.get('id', '')).strip()
+                images = item.get('images') if isinstance(item.get('images'), list) else []
+                first_image = images[0] if images and isinstance(images[0], dict) else {}
+                image = str(first_image.get('url', '')).strip()
+                tracks_obj = item.get('tracks') if isinstance(item.get('tracks'), dict) else {}
+                count = _int_param(tracks_obj.get('total'), 0)
+                count_text = f'{count} tracks' if count > 0 else ''
+                subtitle = ' • '.join([part for part in [owner_name, count_text] if part])
+                items.append({
+                    'type': 'playlist',
+                    'uri': str(item.get('uri', '')).strip(),
+                    'name': str(item.get('name', '')).strip(),
+                    'subtitle': subtitle,
+                    'album': None,
+                    'duration_ms': None,
+                    'image': image or None,
+                })
+
+            filtered = [item for item in items if item.get('uri') and item.get('name')]
+            return jsonify({'ok': True, 'items': filtered, 'query': query, 'types': search_types})
+        except Exception as exc:
+            store.add_event(f'SPOTIFY_SEARCH_ERR {exc}', level='error')
             return _json_error(str(exc))
 
     @app.post('/api/mkdir')
@@ -432,10 +562,13 @@ def create_app() -> Flask:
             'media_dir': str(MEDIA_DIR),
             'spotify': {
                 'cache_dir': str(SPOTIFY_CACHE_DIR),
+                'import_root': str(SPOTIFY_CACHE_DIR),
                 'cache_index_path': str(SPOTIFY_CACHE_INDEX_PATH),
                 'fetch_command': SPOTIFY_FETCH_COMMAND,
                 'oauth_path': str(SPOTIFY_OAUTH_PATH),
                 'default_device_name': SPOTIFY_CAPTURE_DEVICE_NAME,
+                'cache_format': SPOTIFY_CACHE_FORMAT,
+                'cache_bitrate': SPOTIFY_CACHE_BITRATE,
             },
         })
 
