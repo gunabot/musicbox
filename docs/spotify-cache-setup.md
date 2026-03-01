@@ -13,10 +13,10 @@ See also:
   - `local`: play local file/folder under `/home/musicbox/media`
   - `spotify`: resolve Spotify URI to cached local audio, then play with MPV
 - Cache index canonical store: SQLite `config/musicbox.db` (`spotify_cache` table)
-- JSON mirror for compatibility/readability: `config/spotify_cache_index.json`
 - Default fetch script: `scripts/spotify-cache-fetch` (Spotify Web API + librespot + ffmpeg)
 - Capture/import jobs are serialized by a single worker queue (one active Spotify capture/import job at a time).
-- Settings/mappings/OAuth are also stored in SQLite with JSON mirrors for easy inspection/rollback.
+- Settings/mappings/OAuth are also stored in SQLite.
+- Legacy JSON files are auto-migrated to SQLite on startup and archived as `*.legacy-migrated-<timestamp>.json`.
 
 ## Install dependencies
 ```bash
@@ -72,7 +72,7 @@ Then open `http://localhost:8099` in the browser.
 
 ## Capture flow
 1. Card scan resolves `spotify:*` mapping
-2. Cache lookup in `spotify_cache_index.json`
+2. Cache lookup in SQLite (`spotify_cache` table)
 3. On miss:
    - fetch script resolves all tracks for URI using Spotify Web API
    - starts `librespot` pipe backend as temporary capture device

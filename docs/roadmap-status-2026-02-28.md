@@ -39,7 +39,7 @@
 5. Finalize power UX (ATXRaspi path)
 
 ## Foundation updates (2026-03-01)
-- Persistence upgraded to SQLite (`config/musicbox.db`) with JSON compatibility mirrors.
+- Persistence upgraded to SQLite (`config/musicbox.db`) with automatic legacy JSON migration+archive.
 - Spotify async imports moved to a single queue worker (no thread-per-job burst).
 - Library API no longer computes recursive audio list by default (`/api/files` lighter on Pi CPU/SD I/O).
 - Rotary handling improved:

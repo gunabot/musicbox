@@ -27,6 +27,7 @@ class AppStore:
             spotify_oauth_path=SPOTIFY_OAUTH_PATH,
             spotify_cache_index_path=SPOTIFY_CACHE_INDEX_PATH,
         )
+        self.persistence.migrate_legacy_json(archive=True)
         self._events: deque[Dict[str, Any]] = deque(maxlen=EVENTS_MAX)
         self._event_id = 0
         self._mappings_cache: Dict[str, Dict[str, str]] | None = None

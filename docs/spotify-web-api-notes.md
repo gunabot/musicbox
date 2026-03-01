@@ -21,7 +21,8 @@ Last updated: 2026-03-01
 - Web service (`spotify_auth.py`) is the single owner for token refresh/write.
 - Import worker (`scripts/spotify-cache-fetch`) receives an access token and runs in read-only token mode.
 - This avoids refresh-token write races between multiple processes.
-- OAuth state is persisted in SQLite (`config/musicbox.db`) with JSON mirror (`config/spotify_oauth.json`) for visibility.
+- OAuth state is persisted in SQLite (`config/musicbox.db`).
+- Legacy JSON OAuth state is auto-migrated on startup and archived.
 
 ## Endpoints used by Musicbox
 - OAuth:

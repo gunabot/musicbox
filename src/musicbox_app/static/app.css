@@ -251,30 +251,6 @@ button.ghost {
   border-bottom: 1px dotted var(--border);
 }
 
-.library-shell {
-  display: grid;
-  grid-template-columns: 300px 1fr;
-  gap: 14px;
-}
-
-.tree-panel {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: linear-gradient(180deg, #142130, #0f1824);
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  min-height: 520px;
-}
-
-.tree-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
 .breadcrumb {
   display: flex;
   flex-wrap: wrap;
@@ -297,60 +273,6 @@ button.ghost {
 .crumb:hover {
   color: var(--text);
   border-color: var(--accent);
-}
-
-.tree {
-  overflow: auto;
-  padding-right: 4px;
-}
-
-.tree-node {
-  margin: 1px 0;
-}
-
-.tree-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border-radius: 8px;
-  padding: 4px 4px;
-}
-
-.tree-row:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-
-.tree-toggle {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  padding: 0;
-  width: 20px;
-  min-width: 20px;
-  text-align: center;
-  transform: none;
-}
-
-.tree-label {
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  width: 100%;
-  text-align: left;
-  padding: 4px 6px;
-  border-radius: 7px;
-  transform: none;
-}
-
-.tree-label.selected {
-  background: rgba(53, 182, 156, 0.2);
-  color: #dcfff5;
-}
-
-.tree-depth {
-  display: inline-block;
-  width: 14px;
-  min-width: 14px;
 }
 
 .library-main {
@@ -571,17 +493,6 @@ button.ghost {
 
 .toast.warning {
   border-left-color: var(--accent-2);
-}
-
-@media (max-width: 1080px) {
-  .library-shell {
-    grid-template-columns: 1fr;
-  }
-
-  .tree-panel {
-    min-height: 240px;
-    max-height: 340px;
-  }
 }
 
 @media (max-width: 900px) {

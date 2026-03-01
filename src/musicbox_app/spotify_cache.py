@@ -31,12 +31,6 @@ class SpotifyCacheResolver:
         self._lock = threading.RLock()
         self._fetch_lock = threading.Lock()
 
-    def _load_index(self) -> Dict[str, Any]:
-        return self.persistence.load_spotify_cache_index()
-
-    def _save_index(self, payload: Dict[str, Any]) -> None:
-        self.persistence.save_spotify_cache_index(payload)
-
     def _safe_relpath(self, path_value: str) -> str:
         path = Path(path_value)
         if not path.is_absolute():

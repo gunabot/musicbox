@@ -24,7 +24,6 @@ from .media import (
     list_media_entries,
     path_info,
     safe_rel_to_abs,
-    tree_node,
 )
 from .monitors import start_background_monitors
 from .player import PlayerManager
@@ -109,7 +108,6 @@ def create_app() -> Flask:
         kind = request.args.get('kind', 'all').strip().lower()
         relpath = request.args.get('path', '').strip().lstrip('/')
         recursive = _bool_query('recursive', default=False)
-        include_tree = _bool_query('include_tree', default=False)
         include_audio = _bool_query('include_audio', default=False)
 
         if kind not in {'all', 'files', 'dirs'}:
@@ -130,19 +128,7 @@ def create_app() -> Flask:
             'recursive': recursive,
             'include_audio': include_audio,
         }
-        if include_tree:
-            payload['tree'] = tree_node('', include_files=False)
         return jsonify(payload)
-
-    @app.get('/api/tree')
-    def api_tree():
-        relpath = request.args.get('path', '').strip().lstrip('/')
-        include_files = _bool_query('include_files', default=False)
-        try:
-            node = tree_node(relpath=relpath, include_files=include_files)
-            return jsonify({'ok': True, 'node': node})
-        except Exception as exc:
-            return _json_error(str(exc), 404)
 
     @app.get('/api/pathinfo')
     def api_pathinfo():

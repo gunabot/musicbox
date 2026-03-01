@@ -79,11 +79,108 @@ class MusicboxPersistence:
             return {}
         return data if isinstance(data, dict) else {}
 
-    def _write_json_atomic(self, path: Path, payload: Dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f'.{path.name}.tmp')
-        tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
-        tmp.replace(path)
+    def _archive_legacy_file(self, path: Path) -> bool:
+        if not path.exists() or not path.is_file():
+            return False
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        archived = path.with_name(f'{path.name}.legacy-migrated-{stamp}.json')
+        index = 1
+        while archived.exists():
+            archived = path.with_name(f'{path.name}.legacy-migrated-{stamp}-{index}.json')
+            index += 1
+        path.replace(archived)
+        return True
+
+    def migrate_legacy_json(self, *, archive: bool = True) -> Dict[str, int]:
+        stats = {
+            'settings_upserts': 0,
+            'mappings_upserts': 0,
+            'oauth_upserts': 0,
+            'cache_upserts': 0,
+            'files_archived': 0,
+        }
+        with self._lock:
+            settings = self._read_json(self.settings_path)
+            if settings:
+                rows = []
+                for key, value in settings.items():
+                    try:
+                        rows.append((str(key), str(int(value))))
+                    except Exception:
+                        continue
+                if rows:
+                    self._conn.executemany(
+                        'INSERT OR REPLACE INTO settings(key, value) VALUES (?, ?)',
+                        rows,
+                    )
+                    stats['settings_upserts'] = len(rows)
+
+            mappings = normalize_mappings_payload(self._read_json(self.mappings_path))
+            if mappings:
+                now = int(time.time())
+                rows = [(card, row['type'], row['target'], now) for card, row in mappings.items()]
+                self._conn.executemany(
+                    'INSERT OR REPLACE INTO mappings(card, type, target, updated_at) VALUES (?, ?, ?, ?)',
+                    rows,
+                )
+                stats['mappings_upserts'] = len(rows)
+
+            oauth = self._read_json(self.spotify_oauth_path)
+            if oauth:
+                row = self._conn.execute('SELECT payload FROM spotify_oauth WHERE id = 1').fetchone()
+                current: Dict[str, Any] = {}
+                if row is not None:
+                    try:
+                        maybe = json.loads(str(row['payload']))
+                        if isinstance(maybe, dict):
+                            current = maybe
+                    except Exception:
+                        current = {}
+                merged = dict(current)
+                for key, value in oauth.items():
+                    if value is None:
+                        continue
+                    merged[key] = value
+                self._conn.execute(
+                    'INSERT OR REPLACE INTO spotify_oauth(id, payload, updated_at) VALUES (1, ?, ?)',
+                    (json.dumps(merged, sort_keys=True), int(time.time())),
+                )
+                stats['oauth_upserts'] = 1
+
+            cache = self._read_json(self.spotify_cache_index_path)
+            if cache:
+                now = int(time.time())
+                rows = []
+                for uri, value in cache.items():
+                    if not isinstance(value, dict):
+                        continue
+                    key = str(uri).strip()
+                    relpath = str(value.get('relpath', '')).strip()
+                    updated_at = int(value.get('updated_at', now) or now)
+                    if not key or not relpath:
+                        continue
+                    rows.append((key, relpath, updated_at))
+                if rows:
+                    self._conn.executemany(
+                        'INSERT OR REPLACE INTO spotify_cache(uri, relpath, updated_at) VALUES (?, ?, ?)',
+                        rows,
+                    )
+                    stats['cache_upserts'] = len(rows)
+
+            self._conn.commit()
+
+            if archive:
+                for path in (
+                    self.settings_path,
+                    self.mappings_path,
+                    self.spotify_oauth_path,
+                    self.spotify_cache_index_path,
+                ):
+                    if self._archive_legacy_file(path):
+                        stats['files_archived'] += 1
+
+            self._bootstrapped.update({'settings', 'mappings', 'spotify_oauth', 'spotify_cache'})
+        return stats
 
     def _bootstrap_once(self, key: str, fn) -> None:
         if key in self._bootstrapped:
@@ -113,7 +210,6 @@ class MusicboxPersistence:
                 rows,
             )
             self._conn.commit()
-            self._write_json_atomic(self.spotify_cache_index_path, self._spotify_cache_dict_locked())
         self._bootstrapped.add('spotify_cache')
 
     def load_settings(self, defaults: Dict[str, int]) -> Dict[str, int]:
@@ -135,7 +231,6 @@ class MusicboxPersistence:
                     [(str(key), str(int(value))) for key, value in merged.items()],
                 )
                 self._conn.commit()
-                self._write_json_atomic(self.settings_path, {k: int(v) for k, v in merged.items()})
 
             self._bootstrap_once('settings', bootstrap)
 
@@ -168,7 +263,6 @@ class MusicboxPersistence:
             except Exception:
                 self._conn.rollback()
                 raise
-            self._write_json_atomic(self.settings_path, items)
 
     def load_mappings(self) -> Dict[str, Dict[str, str]]:
         with self._lock:
@@ -184,7 +278,6 @@ class MusicboxPersistence:
                     [(card, row['type'], row['target'], now) for card, row in normalized.items()],
                 )
                 self._conn.commit()
-                self._write_json_atomic(self.mappings_path, normalized)
 
             self._bootstrap_once('mappings', bootstrap)
 
@@ -214,7 +307,6 @@ class MusicboxPersistence:
             except Exception:
                 self._conn.rollback()
                 raise
-            self._write_json_atomic(self.mappings_path, normalized)
 
     def load_spotify_oauth(self) -> Dict[str, Any]:
         with self._lock:
@@ -230,7 +322,6 @@ class MusicboxPersistence:
                     (json.dumps(payload, sort_keys=True), now),
                 )
                 self._conn.commit()
-                self._write_json_atomic(self.spotify_oauth_path, payload)
 
             self._bootstrap_once('spotify_oauth', bootstrap)
 
@@ -252,7 +343,6 @@ class MusicboxPersistence:
                 (json.dumps(data, sort_keys=True), now),
             )
             self._conn.commit()
-            self._write_json_atomic(self.spotify_oauth_path, data)
 
     def load_spotify_cache_index(self) -> Dict[str, Any]:
         with self._lock:
@@ -306,9 +396,6 @@ class MusicboxPersistence:
                 (key, rel, ts),
             )
             self._conn.commit()
-            index = self._read_json(self.spotify_cache_index_path)
-            index[key] = {'relpath': rel, 'updated_at': ts}
-            self._write_json_atomic(self.spotify_cache_index_path, index)
 
     def save_spotify_cache_index(self, payload: Dict[str, Any]) -> None:
         data = payload if isinstance(payload, dict) else {}
@@ -335,4 +422,3 @@ class MusicboxPersistence:
             except Exception:
                 self._conn.rollback()
                 raise
-            self._write_json_atomic(self.spotify_cache_index_path, self._spotify_cache_dict_locked())

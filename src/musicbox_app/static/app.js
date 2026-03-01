@@ -8,8 +8,6 @@
     entries: [],
     selectedPath: '',
     currentDir: '',
-    treeNodes: {},
-    expandedDirs: new Set(['']),
     events: [],
     lastEventId: 0,
     pendingUploads: [],
@@ -64,21 +62,6 @@
       return { type, target };
     }
     return { type: 'local', target: normalizeRel(value || '') };
-  }
-
-  function ancestors(path) {
-    const norm = normalizeRel(path);
-    if (!norm) {
-      return [''];
-    }
-    const chunks = norm.split('/');
-    const all = [''];
-    let current = '';
-    for (const chunk of chunks) {
-      current = current ? `${current}/${chunk}` : chunk;
-      all.push(current);
-    }
-    return all;
   }
 
   function setText(id, value) {
@@ -190,8 +173,6 @@
         ? prefs.spotifySearchType
         : 'track,album,playlist';
 
-      const expanded = Array.isArray(prefs.expandedDirs) ? prefs.expandedDirs.map(normalizeRel) : [];
-      state.expandedDirs = new Set(['', ...expanded]);
     } catch (_err) {
       // ignore bad local storage
     }
@@ -207,7 +188,6 @@
       libSearch: $('lib-search') ? $('lib-search').value : state.libSearch,
       spotifySearchQuery: $('spotify-search-query') ? $('spotify-search-query').value : state.spotifySearchQuery,
       spotifySearchType: $('spotify-search-type') ? $('spotify-search-type').value : state.spotifySearchType,
-      expandedDirs: Array.from(state.expandedDirs.values()),
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -527,30 +507,6 @@
     saveUiPrefs();
   }
 
-  async function loadTreeNode(path = '') {
-    const rel = normalizeRel(path);
-    const payload = await apiFetch(`/api/tree?path=${encodeURIComponent(rel)}`);
-    state.treeNodes[rel] = payload.node;
-    return payload.node;
-  }
-
-  async function ensureTreePathLoaded(path) {
-    const chain = ancestors(path);
-    if (!state.treeNodes['']) {
-      await loadTreeNode('');
-    }
-    for (const item of chain) {
-      state.expandedDirs.add(item);
-      if (item && !state.treeNodes[item]) {
-        try {
-          await loadTreeNode(item);
-        } catch (_err) {
-          // ignore missing path
-        }
-      }
-    }
-  }
-
   async function refreshTree() {
     renderBreadcrumb();
   }
@@ -582,104 +538,6 @@
       });
       el.appendChild(segBtn);
     }
-  }
-
-  function renderTreeChildren(parentPath, node, depth) {
-    const frag = document.createDocumentFragment();
-    const children = Array.isArray(node.children) ? node.children : [];
-    const dirs = children.filter((entry) => entry.type === 'dir');
-
-    for (const dir of dirs) {
-      const rel = normalizeRel(dir.path);
-      const row = document.createElement('div');
-      row.className = 'tree-node';
-
-      const line = document.createElement('div');
-      line.className = 'tree-row';
-
-      for (let i = 0; i < depth; i += 1) {
-        const spacer = document.createElement('span');
-        spacer.className = 'tree-depth';
-        line.appendChild(spacer);
-      }
-
-      const toggle = document.createElement('button');
-      toggle.className = 'tree-toggle';
-      const expanded = state.expandedDirs.has(rel);
-      const hasChildren = Boolean(dir.has_children);
-      toggle.textContent = hasChildren ? (expanded ? '▾' : '▸') : '•';
-      toggle.disabled = !hasChildren;
-      toggle.addEventListener('click', async (event) => {
-        event.stopPropagation();
-        if (!hasChildren) {
-          return;
-        }
-        if (state.expandedDirs.has(rel)) {
-          state.expandedDirs.delete(rel);
-          renderTree();
-          saveUiPrefs();
-          return;
-        }
-        state.expandedDirs.add(rel);
-        try {
-          if (!state.treeNodes[rel]) {
-            await loadTreeNode(rel);
-          }
-          renderTree();
-          saveUiPrefs();
-        } catch (err) {
-          toast(`Failed to expand folder: ${err.message}`, 'error');
-        }
-      });
-      line.appendChild(toggle);
-
-      const label = document.createElement('button');
-      label.className = 'tree-label';
-      if (rel === state.currentDir) {
-        label.classList.add('selected');
-      }
-      label.textContent = dir.name;
-      label.addEventListener('click', () => {
-        void setCurrentDir(rel);
-      });
-      line.appendChild(label);
-
-      row.appendChild(line);
-
-      if (expanded && state.treeNodes[rel]) {
-        row.appendChild(renderTreeChildren(rel, state.treeNodes[rel], depth + 1));
-      }
-
-      frag.appendChild(row);
-    }
-
-    return frag;
-  }
-
-  function renderTree() {
-    const root = $('library-tree');
-    if (!root) {
-      return;
-    }
-
-    root.textContent = '';
-    const rootNode = state.treeNodes[''];
-    if (!rootNode) {
-      const btn = document.createElement('button');
-      btn.textContent = 'Load folders';
-      btn.addEventListener('click', async () => {
-        try {
-          await loadTreeNode('');
-          renderTree();
-        } catch (err) {
-          toast(`Tree load failed: ${err.message}`, 'error');
-        }
-      });
-      root.appendChild(btn);
-      return;
-    }
-
-    root.appendChild(renderTreeChildren('', rootNode, 0));
   }
 
   function mappedCardsByPath() {

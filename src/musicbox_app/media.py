@@ -104,45 +104,6 @@ def list_audio_files_recursive(folder: Path) -> List[Path]:
     return files
 
 
-def tree_node(relpath: str = '', include_files: bool = False) -> Dict[str, object]:
-    base = safe_rel_to_abs(relpath)
-    if not base.exists() or not base.is_dir():
-        raise FileNotFoundError(relpath or '.')
-
-    node: Dict[str, object] = {
-        'name': base.name if relpath else 'media',
-        'path': rel_from_abs(base) if relpath else '',
-        'type': 'dir',
-        'children': [],
-    }
-
-    children = sorted(base.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
-    for child in children:
-        if child.is_file() and not include_files:
-            continue
-
-        child_item: Dict[str, object] = {
-            'name': child.name,
-            'path': rel_from_abs(child),
-            'type': _entry_type(child),
-        }
-
-        if child.is_dir():
-            try:
-                child_item['has_children'] = any(grand.is_dir() for grand in child.iterdir())
-            except Exception:
-                child_item['has_children'] = False
-        else:
-            try:
-                child_item['size_bytes'] = child.stat().st_size
-            except Exception:
-                child_item['size_bytes'] = None
-
-        node['children'].append(child_item)
-
-    return node
-
-
 def path_info(relpath: str) -> Dict[str, object]:
     relpath = (relpath or '').strip().lstrip('/')
     target = safe_rel_to_abs(relpath)
