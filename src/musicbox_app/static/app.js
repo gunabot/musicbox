@@ -108,6 +108,17 @@
     return (anchor && el.contains(anchor)) || (focus && el.contains(focus));
   }
 
+  function isTextSelectionActive() {
+    if (!window.getSelection) {
+      return false;
+    }
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+      return false;
+    }
+    return String(selection.toString() || '').trim().length > 0;
+  }
+
   function formatBytes(bytes) {
     if (bytes == null || Number.isNaN(Number(bytes))) {
       return '-';
@@ -481,6 +492,10 @@
     if (payload && Array.isArray(payload.spotify_jobs)) {
       state.spotifyJobs = payload.spotify_jobs;
     }
+    if (isTextSelectionActive()) {
+      appendEvents((payload && payload.events) || []);
+      return;
+    }
     renderStatus(payload);
   }
 
@@ -537,10 +552,6 @@
   }
 
   async function refreshTree() {
-    state.treeNodes = {};
-    await loadTreeNode('');
-    await ensureTreePathLoaded(state.currentDir);
-    renderTree();
     renderBreadcrumb();
   }
 
@@ -708,6 +719,7 @@
     setDisabled('lib-open-selected', !selected || selected.type !== 'dir', 'Select a folder first');
     setDisabled('lib-play-selected', !selected, 'Select a file or folder first');
     setDisabled('lib-map-selected', !selected, 'Select a file or folder first');
+    setDisabled('lib-map-last-scan', !selected, 'Select a file or folder first');
     setDisabled('lib-delete-selected', !selected, 'Select a file or folder first');
   }
 
@@ -756,6 +768,9 @@
   function renderLibrary() {
     const tbody = $('library-body');
     if (!tbody) {
+      return;
+    }
+    if (hasActiveSelectionInElement(tbody) || isTextSelectionActive()) {
       return;
     }
     tbody.textContent = '';
@@ -807,6 +822,69 @@
       const mapTd = document.createElement('td');
       mapTd.textContent = mappedCards.join(', ') || '-';
       tr.appendChild(mapTd);
+
+      const actionsTd = document.createElement('td');
+      actionsTd.className = 'actions library-row-actions';
+
+      const openBtn = document.createElement('button');
+      openBtn.textContent = entry.type === 'dir' ? 'Open' : 'Reveal';
+      openBtn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        setSelectedPath(entry.path);
+        try {
+          if (entry.type === 'dir') {
+            await setCurrentDir(entry.path);
+          } else {
+            const parent = parentPath(entry.path);
+            await setCurrentDir(parent);
+            setSelectedPath(entry.path);
+          }
+        } catch (err) {
+          toast(`Open failed: ${err.message}`, 'error');
+        }
+      });
+      actionsTd.appendChild(openBtn);
+
+      const playBtn = document.createElement('button');
+      playBtn.textContent = 'Play';
+      playBtn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        setSelectedPath(entry.path);
+        try {
+          await playPath(entry.path);
+          toast(`Playing ${entry.path}`);
+        } catch (err) {
+          toast(`Play failed: ${err.message}`, 'error');
+        }
+      });
+      actionsTd.appendChild(playBtn);
+
+      const mapBtn = document.createElement('button');
+      mapBtn.textContent = 'Map';
+      mapBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        setSelectedPath(entry.path);
+        $('map-type').value = 'local';
+        $('map-target').value = entry.path;
+        toast('Target copied to card mapping form');
+      });
+      actionsTd.appendChild(mapBtn);
+
+      const mapLastBtn = document.createElement('button');
+      mapLastBtn.textContent = 'Map Last Card';
+      mapLastBtn.className = 'primary';
+      mapLastBtn.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        setSelectedPath(entry.path);
+        try {
+          await mapLastScannedToPath(entry.path);
+        } catch (err) {
+          toast(`Map failed: ${err.message}`, 'error');
+        }
+      });
+      actionsTd.appendChild(mapLastBtn);
+
+      tr.appendChild(actionsTd);
 
       tr.addEventListener('click', () => {
         setSelectedPath(entry.path);
@@ -889,6 +967,23 @@
     renderMappings();
     renderLibrary();
     toast(remove ? `Mapping removed for ${card}` : `Mapping saved for ${card}`);
+  }
+
+  async function mapLastScannedToPath(path) {
+    const target = normalizeRel(path);
+    if (!target) {
+      toast('Select a file or folder first', 'warning');
+      return;
+    }
+    const payload = await apiFetch('/api/mappings/map-last', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'local', target }),
+    });
+    state.mappings = payload.mappings || {};
+    renderMappings();
+    renderLibrary();
+    toast(`Mapped card ${payload.card || 'last'} to ${target}`);
   }
 
   function renderMappings() {
@@ -1071,11 +1166,8 @@
 
   async function setCurrentDir(path) {
     state.currentDir = normalizeRel(path);
-    state.expandedDirs = new Set([...state.expandedDirs, ...ancestors(state.currentDir)]);
     $('target-dir').value = state.currentDir;
     updateLibrarySelectionUi();
-    await ensureTreePathLoaded(state.currentDir);
-    renderTree();
     renderBreadcrumb();
     await loadLibrary();
     saveUiPrefs();
@@ -1268,8 +1360,20 @@
       }
       $('map-type').value = 'local';
       $('map-target').value = selected.path;
-      activateTab('cards');
-      toast('Selected item copied to card mapping');
+      toast('Selected item copied to card mapping form');
+    });
+
+    $('lib-map-last-scan').addEventListener('click', async () => {
+      const selected = getSelectedEntry();
+      if (!selected) {
+        toast('Select a file or folder first', 'warning');
+        return;
+      }
+      try {
+        await mapLastScannedToPath(selected.path);
+      } catch (err) {
+        toast(`Map failed: ${err.message}`, 'error');
+      }
     });
 
     $('lib-delete-selected').addEventListener('click', async () => {
@@ -1341,43 +1445,31 @@
       }
     });
 
-    $('tree-root-btn').addEventListener('click', async () => {
-      try {
-        await setCurrentDir('');
-      } catch (err) {
-        toast(`Failed to jump to root: ${err.message}`, 'error');
-      }
-    });
-
-    $('tree-collapse-btn').addEventListener('click', () => {
-      state.expandedDirs = new Set(['']);
-      renderTree();
-      saveUiPrefs();
-    });
-
     const dropZone = $('drop-zone');
-    ['dragenter', 'dragover'].forEach((evtName) => {
-      dropZone.addEventListener(evtName, (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        dropZone.classList.add('drag');
+    if (dropZone) {
+      ['dragenter', 'dragover'].forEach((evtName) => {
+        dropZone.addEventListener(evtName, (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          dropZone.classList.add('drag');
+        });
       });
-    });
 
-    ['dragleave', 'drop'].forEach((evtName) => {
-      dropZone.addEventListener(evtName, (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        dropZone.classList.remove('drag');
+      ['dragleave', 'drop'].forEach((evtName) => {
+        dropZone.addEventListener(evtName, (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          dropZone.classList.remove('drag');
+        });
       });
-    });
 
-    dropZone.addEventListener('drop', (event) => {
-      const files = event.dataTransfer && event.dataTransfer.files;
-      if (files && files.length) {
-        queueFiles(files);
-      }
-    });
+      dropZone.addEventListener('drop', (event) => {
+        const files = event.dataTransfer && event.dataTransfer.files;
+        if (files && files.length) {
+          queueFiles(files);
+        }
+      });
+    }
 
     updateLibrarySelectionUi();
   }
@@ -1409,22 +1501,14 @@
     });
 
     $('map-last-scan').addEventListener('click', async () => {
-      const lastCard = state.snapshot && state.snapshot.last_card;
-      if (!lastCard) {
-        toast('No scanned card yet', 'warning');
-        return;
-      }
       if (!state.selectedPath) {
         toast('Select a library item first', 'warning');
         return;
       }
-      $('map-card').value = String(lastCard);
-      $('map-type').value = 'local';
-      $('map-target').value = state.selectedPath;
       try {
-        await saveMapping(false);
+        await mapLastScannedToPath(state.selectedPath);
       } catch (err) {
-        toast(`Save mapping failed: ${err.message}`, 'error');
+        toast(`Map failed: ${err.message}`, 'error');
       }
     });
 
@@ -1629,7 +1713,7 @@
     if (!tbody) {
       return;
     }
-    if (hasActiveSelectionInElement(tbody)) {
+    if (hasActiveSelectionInElement(tbody) || isTextSelectionActive()) {
       return;
     }
     const caps = spotifyCapabilities(state.spotify || {});
@@ -1752,7 +1836,7 @@
     if (!tbody) {
       return;
     }
-    if (hasActiveSelectionInElement(tbody)) {
+    if (hasActiveSelectionInElement(tbody) || isTextSelectionActive()) {
       return;
     }
     tbody.textContent = '';
@@ -2018,9 +2102,6 @@
 
     try {
       await loadMappings();
-      await loadTreeNode('');
-      await ensureTreePathLoaded(state.currentDir);
-      renderTree();
       renderBreadcrumb();
       $('target-dir').value = state.currentDir;
       await loadLibrary();

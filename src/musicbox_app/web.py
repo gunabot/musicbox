@@ -108,15 +108,16 @@ def create_app() -> Flask:
         query = request.args.get('q', '').strip()
         kind = request.args.get('kind', 'all').strip().lower()
         relpath = request.args.get('path', '').strip().lstrip('/')
-        recursive = _bool_query('recursive', default=bool(query))
+        recursive = _bool_query('recursive', default=False)
         include_tree = _bool_query('include_tree', default=False)
+        include_audio = _bool_query('include_audio', default=False)
 
         if kind not in {'all', 'files', 'dirs'}:
             kind = 'all'
 
         try:
             entries = list_media_entries(query=query, kind=kind, relpath=relpath, recursive=recursive)
-            audio_entries = list_audio_entries(query=query, relpath=relpath)
+            audio_entries = list_audio_entries(query=query, relpath=relpath) if include_audio else []
         except Exception as exc:
             return _json_error(str(exc))
 
@@ -127,6 +128,7 @@ def create_app() -> Flask:
             'entries': entries,
             'audio': audio_entries,
             'recursive': recursive,
+            'include_audio': include_audio,
         }
         if include_tree:
             payload['tree'] = tree_node('', include_files=False)
@@ -561,6 +563,39 @@ def create_app() -> Flask:
 
         store.save_mappings(mappings)
         return jsonify({'ok': True, 'mappings': mappings})
+
+    @app.post('/api/mappings/map-last')
+    def api_mappings_map_last():
+        data: Dict[str, Any] = request.get_json(force=True, silent=True) or {}
+        target_raw = str(data.get('target', '')).strip()
+        mapping_type = str(data.get('type', '')).strip().lower() or 'local'
+        if not target_raw:
+            return _json_error('target required')
+        if mapping_type == 'local':
+            target_raw = target_raw.lstrip('/')
+
+        snapshot = store.snapshot(since_id=0, event_limit=1)
+        card = str(snapshot.get('last_card') or '').strip()
+        if not card:
+            return _json_error('no scanned card yet')
+
+        try:
+            normalized = normalize_mapping_value(
+                {'type': mapping_type, 'target': target_raw},
+                strict=True,
+            )
+        except Exception as exc:
+            return _json_error(str(exc))
+        if normalized is None:
+            return _json_error('invalid mapping payload')
+        if normalized['type'] == 'local':
+            safe_rel_to_abs(normalized['target'])
+
+        mappings = store.load_mappings()
+        mappings[card] = normalized
+        store.save_mappings(mappings)
+        store.add_event(f"MAP_SET_LAST {card} -> {normalized['type']}:{normalized['target']}")
+        return jsonify({'ok': True, 'card': card, 'mappings': mappings})
 
     @app.get('/api/config')
     def api_config():

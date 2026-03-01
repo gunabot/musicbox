@@ -12,9 +12,11 @@ See also:
 - Card mappings support:
   - `local`: play local file/folder under `/home/musicbox/media`
   - `spotify`: resolve Spotify URI to cached local audio, then play with MPV
-- Cache index file: `config/spotify_cache_index.json`
+- Cache index canonical store: SQLite `config/musicbox.db` (`spotify_cache` table)
+- JSON mirror for compatibility/readability: `config/spotify_cache_index.json`
 - Default fetch script: `scripts/spotify-cache-fetch` (Spotify Web API + librespot + ffmpeg)
-- Capture jobs are serialized (one active Spotify capture/import job at a time).
+- Capture/import jobs are serialized by a single worker queue (one active Spotify capture/import job at a time).
+- Settings/mappings/OAuth are also stored in SQLite with JSON mirrors for easy inspection/rollback.
 
 ## Install dependencies
 ```bash
@@ -60,6 +62,7 @@ Then open `http://localhost:8099` in the browser.
 - `MUSICBOX_SPOTIFY_IMPORT_ROOT` (default: media root, e.g. `/data/media`)
 - `MUSICBOX_SPOTIFY_CACHE_DIR` (legacy alias for import root)
 - `MUSICBOX_SPOTIFY_CACHE_INDEX_PATH` (default: `/home/musicbox/musicbox/config/spotify_cache_index.json`)
+- `MUSICBOX_DB_PATH` (default: `/home/musicbox/musicbox/config/musicbox.db`)
 - `MUSICBOX_SPOTIFY_FETCH_COMMAND` (default: `/home/musicbox/musicbox/scripts/spotify-cache-fetch`)
 - `MUSICBOX_SPOTIFY_OAUTH_PATH` (default: `/home/musicbox/musicbox/config/spotify_oauth.json`)
 - `MUSICBOX_SPOTIFY_CAPTURE_DEVICE_NAME` (default: `musicbox-capture`)
@@ -89,6 +92,13 @@ Then open `http://localhost:8099` in the browser.
   - track order matches current Spotify playlist order
   - removed tracks are removed from local playlist folder on next sync
   - new tracks are imported on next sync
+- If two playlists share the same title, imports are collision-safe (folder disambiguation by source URI), so one playlist cannot overwrite another.
+
+## Card mapping UX (current)
+- In **Library**, select a file/folder and click:
+  - `Map To Card Form` to prefill the Cards tab form, or
+  - `Map Last Scanned Card` to bind immediately without tab switching.
+- Row-level actions in Library also include `Map Last Card` for one-click mapping.
 
 ## Custom resolver command
 You can replace `MUSICBOX_SPOTIFY_FETCH_COMMAND` with your own script if needed. It must:

@@ -73,79 +73,68 @@
     <section id="tab-library" class="panel">
       <div class="card">
         <h2>Library</h2>
-        <div class="library-shell">
-          <aside class="tree-panel">
-            <div class="tree-header">
-              <strong>Folders</strong>
-              <div class="inline-actions">
-                <button id="tree-root-btn" class="ghost">Root</button>
-                <button id="tree-collapse-btn" class="ghost">Collapse</button>
-              </div>
-            </div>
-            <div id="lib-breadcrumb" class="breadcrumb"></div>
-            <div id="library-tree" class="tree"></div>
-          </aside>
-
-          <div class="library-main">
-            <div class="toolbar">
-              <button id="lib-up-btn" class="ghost">Up</button>
-              <span class="muted">Current:</span>
-              <strong id="lib-current-dir" class="mono">/media</strong>
-              <span class="muted">Selected:</span>
-              <span id="lib-selected-path" class="mono muted">none</span>
-            </div>
-            <div class="toolbar">
-              <input id="lib-search" placeholder="Search in current folder">
-              <select id="lib-kind">
-                <option value="all">All</option>
-                <option value="files">Files only</option>
-                <option value="dirs">Folders only</option>
-              </select>
-              <select id="lib-mapped">
-                <option value="all">All mappings</option>
-                <option value="mapped">Mapped only</option>
-                <option value="unmapped">Unmapped only</option>
-              </select>
-              <button id="lib-refresh">Refresh</button>
-            </div>
-
-            <div class="toolbar">
-              <button id="lib-open-selected">Open Folder</button>
-              <button id="lib-play-selected">Play</button>
-              <button id="lib-map-selected">Map</button>
-              <button id="lib-delete-selected" class="danger">Delete</button>
-              <span class="muted">Tip: single-click select, double-click folder to open, double-click file to play.</span>
-            </div>
-
-            <div class="toolbar">
-              <input id="target-dir" placeholder="target dir under /media (e.g. stories/train)">
-              <button id="mkdir-btn">Create Dir</button>
-              <input id="move-dst" placeholder="new path/name for selected item">
-              <button id="move-btn">Move/Rename Selected</button>
-            </div>
-
-            <div id="drop-zone" class="drop-zone">Drag and drop files/folders here</div>
-            <div class="toolbar">
-              <input id="pick-files" type="file" multiple>
-              <input id="pick-folder" type="file" webkitdirectory directory multiple>
-              <button id="upload-btn">Upload Selected</button>
-              <progress id="upload-progress" value="0" max="100"></progress>
-              <span id="upload-status" class="muted">idle</span>
-            </div>
-
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>Size</th>
-                  <th>Path</th>
-                  <th>Mapped Card</th>
-                </tr>
-              </thead>
-              <tbody id="library-body"></tbody>
-            </table>
+        <div class="library-main">
+          <div class="toolbar">
+            <button id="lib-up-btn" class="ghost">Up</button>
+            <span class="muted">Current:</span>
+            <strong id="lib-current-dir" class="mono">/media</strong>
+            <span class="muted">Selected:</span>
+            <span id="lib-selected-path" class="mono muted">none</span>
           </div>
+          <div id="lib-breadcrumb" class="breadcrumb"></div>
+          <div class="toolbar">
+            <input id="lib-search" placeholder="Search in current folder">
+            <select id="lib-kind">
+              <option value="all">All</option>
+              <option value="files">Files only</option>
+              <option value="dirs">Folders only</option>
+            </select>
+            <select id="lib-mapped">
+              <option value="all">All mappings</option>
+              <option value="mapped">Mapped only</option>
+              <option value="unmapped">Unmapped only</option>
+            </select>
+            <button id="lib-refresh">Refresh</button>
+          </div>
+
+          <div class="toolbar">
+            <button id="lib-open-selected">Open Folder</button>
+            <button id="lib-play-selected">Play</button>
+            <button id="lib-map-selected">Map To Card Form</button>
+            <button id="lib-map-last-scan" class="primary">Map Last Scanned Card</button>
+            <button id="lib-delete-selected" class="danger">Delete</button>
+            <span class="muted">Tip: double-click folder to open, double-click file to play.</span>
+          </div>
+
+          <div class="toolbar">
+            <input id="target-dir" placeholder="target dir under /media (e.g. stories/train)">
+            <button id="mkdir-btn">Create Dir</button>
+            <input id="move-dst" placeholder="new path/name for selected item">
+            <button id="move-btn">Move/Rename Selected</button>
+          </div>
+
+          <div id="drop-zone" class="drop-zone">Drag and drop files/folders here</div>
+          <div class="toolbar">
+            <input id="pick-files" type="file" multiple>
+            <input id="pick-folder" type="file" webkitdirectory directory multiple>
+            <button id="upload-btn">Upload Selected</button>
+            <progress id="upload-progress" value="0" max="100"></progress>
+            <span id="upload-status" class="muted">idle</span>
+          </div>
+
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Path</th>
+                <th>Mapped Card</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="library-body"></tbody>
+          </table>
         </div>
       </div>
     </section>

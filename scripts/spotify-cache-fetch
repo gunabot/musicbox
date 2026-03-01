@@ -654,9 +654,15 @@ def resolve_tracks(session: SpotifySession, spotify_uri: str) -> Tuple[str, Dict
         return media_type, metadata, tracks
 
     if media_type == 'playlist':
-        playlist = session.request('GET', f'/playlists/{media_id}', params={'fields': 'name,snapshot_id,images'})
+        playlist = session.request(
+            'GET',
+            f'/playlists/{media_id}',
+            params={'fields': 'name,snapshot_id,images,owner(id,display_name)'},
+        )
         title = str(playlist.get('name', '')).strip() or media_id
         snapshot_id = str(playlist.get('snapshot_id', '')).strip()
+        owner = playlist.get('owner') if isinstance(playlist.get('owner'), dict) else {}
+        owner_name = str(owner.get('display_name', '')).strip() or str(owner.get('id', '')).strip()
 
         # Use the migration-compatible endpoint and payload format.
         next_url = f'{API_BASE}/playlists/{media_id}/items?limit=50'
@@ -671,6 +677,8 @@ def resolve_tracks(session: SpotifySession, spotify_uri: str) -> Tuple[str, Dict
         metadata = {
             'title': title,
             'snapshot_id': snapshot_id,
+            'playlist_id': media_id,
+            'owner': owner_name,
             'cover_url': select_best_image_url(playlist.get('images')),
         }
         return media_type, metadata, tracks
@@ -1095,6 +1103,33 @@ def all_expected_files_present(folder: Path, expected_files: List[str]) -> bool:
     return True
 
 
+def pick_collection_dir(import_root: Path, base_folder_name: str, spotify_uri: str) -> Path:
+    primary = import_root / base_folder_name
+    if not primary.exists() or not primary.is_dir():
+        return primary
+
+    manifest = read_manifest(primary)
+    source_uri = str(manifest.get('source_uri', '')).strip()
+    if not source_uri or source_uri == spotify_uri:
+        return primary
+
+    suffix = slug(str(spotify_uri.split(':')[-1])[:8], fallback='id')
+    for idx in range(0, 50):
+        if idx == 0:
+            name = slug(f'{base_folder_name} - {suffix}', fallback=base_folder_name)
+        else:
+            name = slug(f'{base_folder_name} - {suffix}-{idx + 1}', fallback=base_folder_name)
+        candidate = import_root / name
+        if not candidate.exists() or not candidate.is_dir():
+            return candidate
+        existing = read_manifest(candidate)
+        if str(existing.get('source_uri', '')).strip() == spotify_uri:
+            return candidate
+
+    # Fallback: last deterministic candidate even in pathological collisions.
+    return import_root / slug(f'{base_folder_name} - {suffix}-x', fallback=base_folder_name)
+
+
 def finalize_collection_import(
     *,
     spotify_uri: str,
@@ -1115,15 +1150,16 @@ def finalize_collection_import(
         album_artist = str(metadata.get('album_artist', '')).strip() or 'Unknown Artist'
         year = str(metadata.get('year', '')).strip() or '0000'
         title = str(metadata.get('title', '')).strip() or 'Album'
-        folder_name = slug(f'{album_artist} - {year} - {title}', fallback='Album')
+        base_folder_name = slug(f'{album_artist} - {year} - {title}', fallback='Album')
     elif media_type == 'playlist':
         title = str(metadata.get('title', '')).strip() or 'Playlist'
-        folder_name = slug(f'Playlist - {title}', fallback='Playlist')
+        base_folder_name = slug(f'Playlist - {title}', fallback='Playlist')
     else:
         fail(f'Unsupported collection media type: {media_type}')
         return ''
 
-    final_dir = import_root / folder_name
+    final_dir = pick_collection_dir(import_root, base_folder_name, spotify_uri)
+    folder_name = final_dir.name
     expected_files = build_expected_filenames(tracks, extension, numbered=True)
     existing_manifest = read_manifest(final_dir)
 

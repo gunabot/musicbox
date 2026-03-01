@@ -37,3 +37,14 @@
 3. Add low-battery warning + graceful shutdown policy
 4. E-ink status integration
 5. Finalize power UX (ATXRaspi path)
+
+## Foundation updates (2026-03-01)
+- Persistence upgraded to SQLite (`config/musicbox.db`) with JSON compatibility mirrors.
+- Spotify async imports moved to a single queue worker (no thread-per-job burst).
+- Library API no longer computes recursive audio list by default (`/api/files` lighter on Pi CPU/SD I/O).
+- Rotary handling improved:
+  - larger fallback transition catch-up window
+  - LED sweep moved off critical rotary path (reduced missed turns at fast rotation)
+- Library/Card UX simplified:
+  - no tree-only dependency for navigation
+  - one-click `Map Last Scanned Card` flow from Library.

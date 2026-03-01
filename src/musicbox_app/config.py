@@ -5,6 +5,7 @@ BASE_DIR = Path(os.environ.get('MUSICBOX_BASE_DIR', '/home/musicbox/musicbox')).
 MEDIA_DIR = Path(os.environ.get('MUSICBOX_MEDIA_DIR', '/home/musicbox/media')).resolve()
 CONFIG_DIR = Path(os.environ.get('MUSICBOX_CONFIG_DIR', str(BASE_DIR / 'config'))).resolve()
 LOG_DIR = Path(os.environ.get('MUSICBOX_LOG_DIR', str(BASE_DIR / 'logs'))).resolve()
+DB_PATH = Path(os.environ.get('MUSICBOX_DB_PATH', str(CONFIG_DIR / 'musicbox.db'))).resolve()
 SPOTIFY_IMPORT_ROOT = Path(
     os.environ.get(
         'MUSICBOX_SPOTIFY_IMPORT_ROOT',

@@ -7,7 +7,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from pathlib import Path
 from typing import Any, Dict, Tuple
 
 from .config import SPOTIFY_CAPTURE_DEVICE_NAME, SPOTIFY_OAUTH_PATH, SPOTIFY_SCOPE
@@ -22,19 +21,14 @@ class SpotifyAuthManager:
     def __init__(self, store: AppStore) -> None:
         self.store = store
         self.path = SPOTIFY_OAUTH_PATH
+        self.persistence = store.persistence
         self._lock = threading.RLock()
 
     def _load(self) -> Dict[str, Any]:
-        if not self.path.exists():
-            return {}
-        try:
-            return json.loads(self.path.read_text())
-        except Exception:
-            return {}
+        return self.persistence.load_spotify_oauth()
 
     def _save(self, payload: Dict[str, Any]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        self.persistence.save_spotify_oauth(payload)
 
     def _http_json(
         self,

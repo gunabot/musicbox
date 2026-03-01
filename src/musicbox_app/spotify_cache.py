@@ -1,4 +1,3 @@
-import json
 import os
 import shlex
 import subprocess
@@ -25,6 +24,7 @@ class SpotifyCacheResolver:
     def __init__(self, store: AppStore, spotify_auth: SpotifyAuthManager) -> None:
         self.store = store
         self.spotify_auth = spotify_auth
+        self.persistence = store.persistence
         self.import_root = SPOTIFY_CACHE_DIR
         self.index_path = SPOTIFY_CACHE_INDEX_PATH
         self.fetch_command = SPOTIFY_FETCH_COMMAND
@@ -32,16 +32,10 @@ class SpotifyCacheResolver:
         self._fetch_lock = threading.Lock()
 
     def _load_index(self) -> Dict[str, Any]:
-        if not self.index_path.exists():
-            return {}
-        try:
-            return json.loads(self.index_path.read_text())
-        except Exception:
-            return {}
+        return self.persistence.load_spotify_cache_index()
 
     def _save_index(self, payload: Dict[str, Any]) -> None:
-        self.index_path.parent.mkdir(parents=True, exist_ok=True)
-        self.index_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        self.persistence.save_spotify_cache_index(payload)
 
     def _safe_relpath(self, path_value: str) -> str:
         path = Path(path_value)
@@ -95,10 +89,21 @@ class SpotifyCacheResolver:
         refresh_playlist = bool(refresh and media_type == 'playlist')
 
         if not refresh_playlist:
-            with self._lock:
-                index = self._load_index()
-                existing = index.get(uri, {})
-                relpath = str(existing.get('relpath', '')).strip()
+            cached = self.persistence.get_spotify_cache(uri)
+            relpath = str((cached or {}).get('relpath', '')).strip()
+            if relpath:
+                try:
+                    resolved = self._safe_relpath(relpath)
+                    self.store.add_event(f'SPOTIFY_CACHE_HIT {uri} -> {resolved}')
+                    return resolved
+                except Exception:
+                    pass
+
+        with self._fetch_lock:
+            # Another thread may have completed this while we waited.
+            if not refresh_playlist:
+                cached = self.persistence.get_spotify_cache(uri)
+                relpath = str((cached or {}).get('relpath', '')).strip()
                 if relpath:
                     try:
                         resolved = self._safe_relpath(relpath)
@@ -106,21 +111,6 @@ class SpotifyCacheResolver:
                         return resolved
                     except Exception:
                         pass
-
-        with self._fetch_lock:
-            # Another thread may have completed this while we waited.
-            if not refresh_playlist:
-                with self._lock:
-                    index = self._load_index()
-                    existing = index.get(uri, {})
-                    relpath = str(existing.get('relpath', '')).strip()
-                    if relpath:
-                        try:
-                            resolved = self._safe_relpath(relpath)
-                            self.store.add_event(f'SPOTIFY_CACHE_HIT {uri} -> {resolved}')
-                            return resolved
-                        except Exception:
-                            pass
 
             self.import_root.mkdir(parents=True, exist_ok=True)
             cmd = self._build_cmd(uri)
@@ -146,13 +136,7 @@ class SpotifyCacheResolver:
 
             relpath = self._safe_relpath(lines[-1])
 
-            with self._lock:
-                index = self._load_index()
-                index[uri] = {
-                    'relpath': relpath,
-                    'updated_at': int(time.time()),
-                }
-                self._save_index(index)
+            self.persistence.set_spotify_cache(uri, relpath=relpath, updated_at=int(time.time()))
 
         self.store.add_event(f'SPOTIFY_CACHE_WRITE {uri} -> {relpath}')
         return relpath

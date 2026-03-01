@@ -1,20 +1,35 @@
 import copy
-import json
 import threading
 from collections import deque
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List
 
-from .config import DEFAULT_SETTINGS, EVENTS_MAX, MAPPINGS_PATH, SETTINGS_PATH
+from .config import (
+    DB_PATH,
+    DEFAULT_SETTINGS,
+    EVENTS_MAX,
+    MAPPINGS_PATH,
+    SETTINGS_PATH,
+    SPOTIFY_CACHE_INDEX_PATH,
+    SPOTIFY_OAUTH_PATH,
+)
 from .mappings import normalize_mappings_payload
+from .persistence import MusicboxPersistence
 
 
 class AppStore:
     def __init__(self) -> None:
         self.lock = threading.RLock()
+        self.persistence = MusicboxPersistence(
+            db_path=DB_PATH,
+            settings_path=SETTINGS_PATH,
+            mappings_path=MAPPINGS_PATH,
+            spotify_oauth_path=SPOTIFY_OAUTH_PATH,
+            spotify_cache_index_path=SPOTIFY_CACHE_INDEX_PATH,
+        )
         self._events: deque[Dict[str, Any]] = deque(maxlen=EVENTS_MAX)
         self._event_id = 0
+        self._mappings_cache: Dict[str, Dict[str, str]] | None = None
         self._settings = self._load_settings()
         self.state: Dict[str, Any] = {
             'buttons': [0, 0, 0, 0],
@@ -46,39 +61,26 @@ class AppStore:
             },
         }
 
-    def _load_json(self, path: Path) -> Dict[str, Any]:
-        if not path.exists():
-            return {}
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            return {}
-
-    def _write_json(self, path: Path, payload: Dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True))
-
     def _load_settings(self) -> Dict[str, int]:
-        settings = dict(DEFAULT_SETTINGS)
-        raw = self._load_json(SETTINGS_PATH)
-        for key in DEFAULT_SETTINGS:
-            if key in raw:
-                try:
-                    settings[key] = int(raw[key])
-                except Exception:
-                    pass
-        return settings
+        return self.persistence.load_settings(DEFAULT_SETTINGS)
 
     def save_settings(self) -> None:
         with self.lock:
-            self._write_json(SETTINGS_PATH, self.state['settings'])
+            self.persistence.save_settings(self.state['settings'])
 
-    def load_mappings(self) -> Dict[str, Dict[str, str]]:
-        raw = self._load_json(MAPPINGS_PATH)
-        return normalize_mappings_payload(raw)
+    def load_mappings(self, *, use_cache: bool = False) -> Dict[str, Dict[str, str]]:
+        with self.lock:
+            if use_cache and self._mappings_cache is not None:
+                return copy.deepcopy(self._mappings_cache)
+            mappings = self.persistence.load_mappings()
+            self._mappings_cache = mappings
+            return copy.deepcopy(mappings)
 
     def save_mappings(self, mappings: Dict[str, Any]) -> None:
-        self._write_json(MAPPINGS_PATH, normalize_mappings_payload(mappings))
+        normalized = normalize_mappings_payload(mappings)
+        with self.lock:
+            self.persistence.save_mappings(normalized)
+            self._mappings_cache = normalized
 
     def _new_event(self, message: str, level: str = 'info') -> Dict[str, Any]:
         self._event_id += 1

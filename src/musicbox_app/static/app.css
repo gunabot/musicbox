@@ -407,6 +407,15 @@ button.ghost {
   margin-right: 6px;
 }
 
+.data-table td.library-row-actions {
+  white-space: normal;
+  min-width: 270px;
+}
+
+.data-table td.library-row-actions button {
+  margin-bottom: 6px;
+}
+
 .data-table tr.selected td {
   background: rgba(53, 182, 156, 0.17);
 }

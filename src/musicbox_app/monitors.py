@@ -232,6 +232,9 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
             rotary_events: deque[int] = deque(maxlen=256)
             rotary_lock = threading.Lock()
+            led_hw_lock = threading.Lock()
+            led_queue: deque[tuple[str, list[int]]] = deque(maxlen=48)
+            led_cond = threading.Condition()
 
             def queue_rotary_state(_channel: int) -> None:
                 try:
@@ -264,11 +267,34 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 step_s = max(0.005, min(0.25, step_ms / 1000.0))
                 order = LED_PINS if direction == 'CW' else list(reversed(LED_PINS))
                 for led_pin in order:
-                    seesaw.digital_write(led_pin, True)
+                    with led_hw_lock:
+                        seesaw.digital_write(led_pin, True)
                     time.sleep(step_s)
-                    seesaw.digital_write(led_pin, False)
+                    with led_hw_lock:
+                        seesaw.digital_write(led_pin, False)
                 for idx, led_pin in enumerate(LED_PINS):
-                    seesaw.digital_write(led_pin, button_state[idx] == 1)
+                    with led_hw_lock:
+                        seesaw.digital_write(led_pin, button_state[idx] == 1)
+
+            def queue_led_sweep(direction: str, button_state: list[int]) -> None:
+                with led_cond:
+                    if len(led_queue) >= led_queue.maxlen:
+                        led_queue.popleft()
+                    led_queue.append((direction, list(button_state)))
+                    led_cond.notify()
+
+            def led_worker() -> None:
+                while True:
+                    with led_cond:
+                        while not led_queue:
+                            led_cond.wait(timeout=1.0)
+                        direction, button_state = led_queue.popleft()
+                    try:
+                        rotary_led_sweep(direction, button_state)
+                    except Exception:
+                        pass
+
+            threading.Thread(target=led_worker, daemon=True).start()
 
             last_buttons = read_buttons()
             last_sw = GPIO.input(ROT_SW)
@@ -283,7 +309,8 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                     pressed = new == 1
                     store.add_event(f"BUTTON{idx} {'PRESSED' if pressed else 'RELEASED'}")
-                    seesaw.digital_write(LED_PINS[idx - 1], pressed)
+                    with led_hw_lock:
+                        seesaw.digital_write(LED_PINS[idx - 1], pressed)
 
                     if pressed:
                         if idx == 1:
@@ -308,7 +335,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 # Fallback poll keeps it working even if edge detection is noisy.
                 if not pending_states:
                     state = rot_state()
-                    while state != last_state and len(pending_states) < 12:
+                    while state != last_state and len(pending_states) < 40:
                         pending_states.append(state)
                         time.sleep(0.00015)
                         state = rot_state()
@@ -326,7 +353,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                         store.set_rotary(direction='CCW', pos_delta=-1)
                         store.add_event('ROTARY CCW')
                         player.add_volume(-volume_delta)
-                        rotary_led_sweep('CCW', buttons)
+                        queue_led_sweep('CCW', buttons)
                         accum -= 4
 
                     while accum <= -4:
@@ -334,7 +361,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                         store.set_rotary(direction='CW', pos_delta=1)
                         store.add_event('ROTARY CW')
                         player.add_volume(+volume_delta)
-                        rotary_led_sweep('CW', buttons)
+                        queue_led_sweep('CW', buttons)
                         accum += 4
 
                 sw = GPIO.input(ROT_SW)
@@ -410,7 +437,7 @@ def _rfid_worker(store: AppStore, player: PlayerManager) -> None:
                     store.set_last_card(card)
                     store.add_event(f'CARD {card}')
 
-                    mappings = store.load_mappings()
+                    mappings = store.load_mappings(use_cache=True)
                     mapped = mappings.get(card)
                     if not mapped:
                         store.add_event(f'CARD_UNMAPPED {card}')
