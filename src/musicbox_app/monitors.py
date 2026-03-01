@@ -2,6 +2,7 @@ import os
 import subprocess
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -229,6 +230,35 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             def rot_state() -> int:
                 return (GPIO.input(ROT_CLK) << 1) | GPIO.input(ROT_DT)
 
+            rotary_events: deque[int] = deque(maxlen=256)
+            rotary_lock = threading.Lock()
+
+            def queue_rotary_state(_channel: int) -> None:
+                try:
+                    state = rot_state()
+                except Exception:
+                    return
+                with rotary_lock:
+                    rotary_events.append(state)
+
+            use_edge_capture = True
+            try:
+                # Event-driven edge capture avoids dropping transitions when
+                # the encoder is turned quickly.
+                GPIO.add_event_detect(ROT_CLK, GPIO.BOTH, callback=queue_rotary_state, bouncetime=1)
+                GPIO.add_event_detect(ROT_DT, GPIO.BOTH, callback=queue_rotary_state, bouncetime=1)
+            except Exception as exc:
+                use_edge_capture = False
+                store.add_event(f'ROTARY_EDGE_FALLBACK {exc}', level='warning')
+                try:
+                    GPIO.remove_event_detect(ROT_CLK)
+                except Exception:
+                    pass
+                try:
+                    GPIO.remove_event_detect(ROT_DT)
+                except Exception:
+                    pass
+
             def rotary_led_sweep(direction: str, button_state: list[int]) -> None:
                 step_ms = store.get_setting('rotary_led_step_ms', 25)
                 step_s = max(0.005, min(0.25, step_ms / 1000.0))
@@ -268,26 +298,42 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                 last_buttons = buttons
 
-                state = rot_state()
-                if state != last_state:
+                pending_states: list[int] = []
+                if use_edge_capture:
+                    with rotary_lock:
+                        if rotary_events:
+                            pending_states = list(rotary_events)
+                            rotary_events.clear()
+
+                # Fallback poll keeps it working even if edge detection is noisy.
+                if not pending_states:
+                    state = rot_state()
+                    if state != last_state:
+                        pending_states = [state]
+
+                for state in pending_states:
+                    if state == last_state:
+                        continue
                     step = trans.get((last_state, state), 0)
-                    accum += step
+                    if step:
+                        accum += step
                     last_state = state
 
-                    if accum >= 4:
+                    while accum >= 4:
                         volume_delta = _rotary_volume_delta(store)
                         store.set_rotary(direction='CCW', pos_delta=-1)
                         store.add_event('ROTARY CCW')
                         player.add_volume(-volume_delta)
                         rotary_led_sweep('CCW', buttons)
-                        accum = 0
-                    elif accum <= -4:
+                        accum -= 4
+
+                    while accum <= -4:
                         volume_delta = _rotary_volume_delta(store)
                         store.set_rotary(direction='CW', pos_delta=1)
                         store.add_event('ROTARY CW')
                         player.add_volume(+volume_delta)
                         rotary_led_sweep('CW', buttons)
-                        accum = 0
+                        accum += 4
 
                 sw = GPIO.input(ROT_SW)
                 if sw != last_sw:
@@ -296,11 +342,19 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                 store.set_buttons(buttons)
                 store.set_rotary(sw=1 if sw == 0 else 0)
-                time.sleep(0.003)
+                time.sleep(0.001)
 
         except Exception as exc:
             store.update_health(seesaw=False)
             store.add_event(f'INPUT_ERR {exc}', level='error')
+            try:
+                GPIO.remove_event_detect(ROT_CLK)
+            except Exception:
+                pass
+            try:
+                GPIO.remove_event_detect(ROT_DT)
+            except Exception:
+                pass
             try:
                 GPIO.cleanup()
             except Exception:

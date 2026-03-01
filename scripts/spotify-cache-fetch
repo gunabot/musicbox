@@ -292,10 +292,47 @@ def find_existing_cover_file(target_folder: Path, *, basename: str = 'cover') ->
     return ''
 
 
-def ensure_cover_art(target_folder: Path, metadata: Dict[str, Any], *, basename: str = 'cover') -> str:
+def _move_cover_file_basename(target_folder: Path, *, src_basename: str, dst_basename: str) -> str:
+    src_name = find_existing_cover_file(target_folder, basename=src_basename)
+    if not src_name:
+        return ''
+    src_path = target_folder / src_name
+    suffix = src_path.suffix.lower() or '.jpg'
+    if suffix not in KNOWN_IMAGE_SUFFIXES:
+        suffix = '.jpg'
+    dst_path = target_folder / f'{dst_basename}{suffix}'
+    try:
+        if dst_path.exists() and dst_path != src_path:
+            dst_path.unlink()
+        src_path.replace(dst_path)
+        for other_ext in KNOWN_IMAGE_SUFFIXES:
+            candidate = target_folder / f'{dst_basename}{other_ext}'
+            if candidate == dst_path:
+                continue
+            if candidate.exists():
+                candidate.unlink()
+        return dst_path.name
+    except Exception:
+        return ''
+
+
+def ensure_cover_art(
+    target_folder: Path,
+    metadata: Dict[str, Any],
+    *,
+    basename: str = 'cover',
+    legacy_basenames: Tuple[str, ...] | None = None,
+) -> str:
     existing = find_existing_cover_file(target_folder, basename=basename)
     if existing:
         return existing
+    for legacy in legacy_basenames or ():
+        old_base = str(legacy or '').strip()
+        if not old_base or old_base == basename:
+            continue
+        moved = _move_cover_file_basename(target_folder, src_basename=old_base, dst_basename=basename)
+        if moved:
+            return moved
     image_url = str(metadata.get('cover_url', '')).strip()
     if not image_url:
         return ''
@@ -313,26 +350,43 @@ def is_valid_audio_file(path: Path) -> bool:
         return False
 
 
-def build_track_basename(track: Dict[str, Any]) -> str:
+def build_track_basename(track: Dict[str, Any], *, year: str = '') -> str:
     artists = [str(name).strip() for name in track.get('artists', []) if str(name).strip()]
     artist_text = ', '.join(artists[:2]) or 'Unknown Artist'
     title = str(track.get('name', '')).strip() or 'Untitled'
+    year_text = extract_year(year)
+    if year_text and year_text != '0000':
+        return slug(f'{artist_text} - {year_text} - {title}', fallback='track')
     return slug(f'{artist_text} - {title}', fallback='track')
 
 
-def build_track_filename(track: Dict[str, Any], index: int, total: int, extension: str, *, numbered: bool) -> str:
-    base_name = build_track_basename(track)
+def build_track_filename(
+    track: Dict[str, Any],
+    index: int,
+    total: int,
+    extension: str,
+    *,
+    numbered: bool,
+    year: str = '',
+) -> str:
+    base_name = build_track_basename(track, year=(year if not numbered else ''))
     if not numbered:
         return f'{base_name}{extension}'
     width = max(2, len(str(max(1, total))))
     return f'{index:0{width}d} - {base_name}{extension}'
 
 
-def build_expected_filenames(tracks: List[Dict[str, Any]], extension: str, *, numbered: bool) -> List[str]:
+def build_expected_filenames(
+    tracks: List[Dict[str, Any]],
+    extension: str,
+    *,
+    numbered: bool,
+    year: str = '',
+) -> List[str]:
     total = len(tracks)
     out: List[str] = []
     for index, track in enumerate(tracks, start=1):
-        out.append(build_track_filename(track, index, total, extension, numbered=numbered))
+        out.append(build_track_filename(track, index, total, extension, numbered=numbered, year=year))
     return out
 
 
@@ -944,10 +998,26 @@ def finalize_single_import(
 ) -> str:
     extension = CACHE_EXTENSION.get(cache_format, '.mp3')
     singles_dir = import_root / 'Singles'
-    final_path = singles_dir / build_track_filename(track, 1, 1, extension, numbered=False)
+    single_year = str(metadata.get('year', '')).strip()
+    final_path = singles_dir / build_track_filename(track, 1, 1, extension, numbered=False, year=single_year)
+    legacy_path = singles_dir / build_track_filename(track, 1, 1, extension, numbered=False, year='')
+    legacy_basenames: Tuple[str, ...] = ()
+    if legacy_path != final_path:
+        legacy_basenames = (legacy_path.stem,)
+
+    if not is_valid_audio_file(final_path) and legacy_path != final_path and is_valid_audio_file(legacy_path):
+        singles_dir.mkdir(parents=True, exist_ok=True)
+        if final_path.exists():
+            final_path.unlink()
+        legacy_path.rename(final_path)
 
     if is_valid_audio_file(final_path):
-        ensure_cover_art(final_path.parent, metadata, basename=final_path.stem)
+        ensure_cover_art(
+            final_path.parent,
+            metadata,
+            basename=final_path.stem,
+            legacy_basenames=legacy_basenames,
+        )
         return to_relative(final_path, media_dir)
 
     temp_root = import_root / IMPORTING_DIR_NAME / f'spotify-{int(time.time())}-{os.getpid()}-track'
@@ -973,7 +1043,12 @@ def finalize_single_import(
         if final_path.exists():
             final_path.unlink()
         result_path.rename(final_path)
-        ensure_cover_art(final_path.parent, metadata, basename=final_path.stem)
+        ensure_cover_art(
+            final_path.parent,
+            metadata,
+            basename=final_path.stem,
+            legacy_basenames=legacy_basenames,
+        )
         return to_relative(final_path, media_dir)
     finally:
         cleanup_dir(temp_root)
@@ -1053,7 +1128,7 @@ def finalize_collection_import(
     existing_manifest = read_manifest(final_dir)
 
     if all_expected_files_present(final_dir, expected_files):
-        existing_cover = ensure_cover_art(final_dir, metadata, basename='cover')
+        ensure_cover_art(final_dir, metadata, basename=folder_name, legacy_basenames=('cover',))
         if media_type == 'playlist':
             cached_snapshot = str(existing_manifest.get('snapshot_id', '')).strip()
             latest_snapshot = str(metadata.get('snapshot_id', '')).strip()
@@ -1087,7 +1162,7 @@ def finalize_collection_import(
         if not all_expected_files_present(work_dir, expected_files):
             fail(f'Import incomplete for {spotify_uri}')
 
-        cover_file = ensure_cover_art(work_dir, metadata, basename='cover')
+        cover_file = ensure_cover_art(work_dir, metadata, basename=folder_name, legacy_basenames=('cover',))
 
         manifest_tracks = []
         for index, track in enumerate(tracks, start=1):
