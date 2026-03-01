@@ -54,8 +54,18 @@ class PlayerManager:
         })
         self.store.update_health(mpv_running=True)
 
+    def _desired_volume(self) -> int:
+        snap = self.store.snapshot(since_id=0, event_limit=1)
+        player = snap.get('player') if isinstance(snap.get('player'), dict) else {}
+        try:
+            value = int(round(float(player.get('volume', 50))))
+        except Exception:
+            value = 50
+        return max(0, min(100, value))
+
     def _start_target(self, target: Path, source: str, spotify_uri: str | None = None) -> None:
         self.stop()
+        volume = self._desired_volume()
 
         if target.is_dir():
             files = list_audio_files_recursive(target)
@@ -67,6 +77,7 @@ class PlayerManager:
                 '--no-video',
                 '--really-quiet',
                 f'--audio-device={AUDIO_DEVICE}',
+                f'--volume={volume}',
                 f'--input-ipc-server={MPV_SOCKET}',
                 f'--playlist={PLAYLIST_PATH}',
             ]
@@ -76,6 +87,7 @@ class PlayerManager:
                 '--no-video',
                 '--really-quiet',
                 f'--audio-device={AUDIO_DEVICE}',
+                f'--volume={volume}',
                 f'--input-ipc-server={MPV_SOCKET}',
                 str(target),
             ]
@@ -140,14 +152,19 @@ class PlayerManager:
         return False
 
     def add_volume(self, delta: float) -> bool:
-        response = self._mpv_cmd(['add', 'volume', float(delta)])
-        if response is None:
-            return False
-
+        delta_value = float(delta)
         current = self._mpv_cmd(['get_property', 'volume'])
         if current and isinstance(current.get('data'), (int, float)):
-            self.store.set_player_state({'volume': round(float(current['data']))})
-        self.store.add_event(f'VOLUME {float(delta):+.2f}')
+            base = float(current['data'])
+        else:
+            base = float(self._desired_volume())
+        target = max(0.0, min(100.0, base + delta_value))
+
+        # Best effort live apply if MPV IPC is available; otherwise keep the
+        # desired volume in state and apply on the next playback start.
+        self._mpv_cmd(['set_property', 'volume', float(target)])
+        self.store.set_player_state({'volume': int(round(target))})
+        self.store.add_event(f'VOLUME {delta_value:+.2f} -> {int(round(target))}')
         return True
 
     def action(self, action: str) -> bool:
@@ -162,9 +179,9 @@ class PlayerManager:
             self.stop()
             self.store.add_event('STOP')
             return True
-        if action == 'volup':
+        if action in {'volup', 'volumeup', 'vol+'}:
             return self.add_volume(+5)
-        if action == 'voldown':
+        if action in {'voldown', 'volumedown', 'vol-'}:
             return self.add_volume(-5)
         return False
 

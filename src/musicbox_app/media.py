@@ -27,6 +27,14 @@ def _entry_type(path: Path) -> str:
     return 'dir' if path.is_dir() else 'file'
 
 
+def _is_hidden(path: Path, base: Path) -> bool:
+    try:
+        rel = path.relative_to(base)
+    except Exception:
+        rel = path
+    return any(part.startswith('.') for part in rel.parts)
+
+
 def _iter_entries(base: Path, recursive: bool) -> Iterator[Path]:
     if not base.exists() or not base.is_dir():
         return iter(())
@@ -46,6 +54,8 @@ def list_media_entries(
     base = safe_rel_to_abs(relpath)
 
     for path in _iter_entries(base, recursive=recursive):
+        if _is_hidden(path, base):
+            continue
         entry_type = _entry_type(path)
         if kind == 'files' and entry_type != 'file':
             continue
@@ -80,6 +90,8 @@ def list_audio_entries(query: str = '', relpath: str = '') -> List[Dict[str, obj
         return entries
 
     for path in base.rglob('*'):
+        if _is_hidden(path, base):
+            continue
         if not path.is_file():
             continue
         if path.suffix.lower() not in MEDIA_EXTENSIONS:
