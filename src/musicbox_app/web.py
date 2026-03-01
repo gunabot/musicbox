@@ -286,7 +286,9 @@ def create_app() -> Flask:
             return _json_error('spotify target required')
         refresh = bool(data.get('refresh', False))
         try:
-            spotify_auth.get_access_token(force_refresh=False)
+            # Force-refresh before long-running capture/import jobs so we fail fast
+            # on revoked credentials instead of dying mid-job.
+            spotify_auth.get_access_token(force_refresh=True)
             async_mode = bool(data.get('async', False))
             if async_mode:
                 job = spotify_jobs.enqueue(target, refresh=refresh)

@@ -19,6 +19,7 @@ URI_RE = re.compile(r'^spotify:(track|album|playlist):([A-Za-z0-9]+)$')
 SUPPORTED_CACHE_FORMATS = {'mp3', 'flac', 'ogg'}
 DEFAULT_CACHE_FORMAT = 'mp3'
 DEFAULT_CACHE_BITRATE = '192k'
+DEFAULT_MIN_ACCESS_TTL_SECONDS = 600
 CACHE_EXTENSION = {
     'mp3': '.mp3',
     'flac': '.flac',
@@ -230,6 +231,12 @@ class SpotifySession:
     def __init__(self, oauth_path: Path) -> None:
         self.oauth_path = oauth_path
         self.payload = self._load_payload()
+        ttl_raw = os.environ.get('MUSICBOX_SPOTIFY_MIN_ACCESS_TTL_SECONDS', str(DEFAULT_MIN_ACCESS_TTL_SECONDS))
+        try:
+            ttl_value = int(str(ttl_raw or DEFAULT_MIN_ACCESS_TTL_SECONDS))
+        except Exception:
+            ttl_value = DEFAULT_MIN_ACCESS_TTL_SECONDS
+        self.min_access_ttl_seconds = max(30, ttl_value)
         self.client_id = str(self.payload.get('client_id', '')).strip()
         self.refresh_token = str(self.payload.get('refresh_token', '')).strip()
         self.access_token = str(self.payload.get('access_token', '')).strip()
@@ -282,7 +289,7 @@ class SpotifySession:
         self._save_payload()
 
     def ensure_access_token(self) -> str:
-        if self.access_token and self.expires_at > int(time.time()) + 30:
+        if self.access_token and self.expires_at > int(time.time()) + self.min_access_ttl_seconds:
             return self.access_token
         self.refresh()
         return self.access_token
