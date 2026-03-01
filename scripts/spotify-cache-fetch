@@ -3,10 +3,12 @@ import json
 import os
 import re
 import signal
+import shlex
 import shutil
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -29,6 +31,10 @@ KNOWN_AUDIO_SUFFIXES = {'.mp3', '.flac', '.ogg', '.m4a', '.aac'}
 MANIFEST_NAME = '.spotify-import.json'
 IMPORTING_DIR_NAME = '.importing'
 MIN_VALID_BYTES = 20000
+PCM_SAMPLE_RATE = 44100
+PCM_CHANNELS = 2
+PCM_BYTES_PER_SAMPLE = 2
+PCM_BYTES_PER_SECOND = PCM_SAMPLE_RATE * PCM_CHANNELS * PCM_BYTES_PER_SAMPLE
 
 
 def fail(message: str, code: int = 1) -> None:
@@ -58,8 +64,12 @@ def normalize_spotify_uri(value: str) -> str:
 
 
 def slug(value: str, fallback: str = 'item') -> str:
-    text = re.sub(r'[^A-Za-z0-9._ -]+', '_', str(value or '')).strip()
-    text = re.sub(r'\s+', ' ', text)
+    text = unicodedata.normalize('NFKC', str(value or ''))
+    text = text.replace('\x00', '')
+    text = text.replace('/', '_').replace('\\', '_')
+    text = re.sub(r'[\r\n\t]+', ' ', text)
+    text = re.sub(r'[:*?"<>|]+', '_', text)
+    text = re.sub(r'\s+', ' ', text).strip()
     text = text.strip(' .')
     return text or fallback
 
@@ -230,29 +240,47 @@ def to_relative(path: Path, media_dir: Path) -> str:
 class SpotifySession:
     def __init__(self, oauth_path: Path) -> None:
         self.oauth_path = oauth_path
-        self.payload = self._load_payload()
+        provided_access_token = str(os.environ.get('MUSICBOX_SPOTIFY_ACCESS_TOKEN', '')).strip()
+        provided_expires_at_raw = str(os.environ.get('MUSICBOX_SPOTIFY_ACCESS_EXPIRES_AT', '')).strip()
+        provided_client_id = str(os.environ.get('MUSICBOX_SPOTIFY_CLIENT_ID', '')).strip()
+        refresh_flag = str(os.environ.get('MUSICBOX_SPOTIFY_ENABLE_REFRESH', '1')).strip().lower()
+        self.refresh_enabled = refresh_flag not in {'0', 'false', 'no', 'off'}
+
+        self.payload = self._load_payload(allow_missing=bool(provided_access_token))
         ttl_raw = os.environ.get('MUSICBOX_SPOTIFY_MIN_ACCESS_TTL_SECONDS', str(DEFAULT_MIN_ACCESS_TTL_SECONDS))
         try:
             ttl_value = int(str(ttl_raw or DEFAULT_MIN_ACCESS_TTL_SECONDS))
         except Exception:
             ttl_value = DEFAULT_MIN_ACCESS_TTL_SECONDS
         self.min_access_ttl_seconds = max(30, ttl_value)
-        self.client_id = str(self.payload.get('client_id', '')).strip()
+
+        self.client_id = provided_client_id or str(self.payload.get('client_id', '')).strip()
         self.refresh_token = str(self.payload.get('refresh_token', '')).strip()
-        self.access_token = str(self.payload.get('access_token', '')).strip()
-        self.expires_at = int(self.payload.get('expires_at', 0) or 0)
-        if not self.client_id:
+        self.access_token = provided_access_token or str(self.payload.get('access_token', '')).strip()
+        try:
+            provided_expires_at = int(provided_expires_at_raw) if provided_expires_at_raw else 0
+        except Exception:
+            provided_expires_at = 0
+        self.expires_at = provided_expires_at or int(self.payload.get('expires_at', 0) or 0)
+
+        if not self.access_token:
+            fail('Spotify access token missing for capture worker')
+        if self.refresh_enabled and not self.client_id:
             fail(f'Spotify client_id missing in {self.oauth_path}')
-        if not self.refresh_token:
+        if self.refresh_enabled and not self.refresh_token:
             fail(f'Spotify refresh_token missing in {self.oauth_path}')
         self.ensure_access_token()
 
-    def _load_payload(self) -> Dict[str, Any]:
+    def _load_payload(self, *, allow_missing: bool = False) -> Dict[str, Any]:
         if not self.oauth_path.exists():
+            if allow_missing:
+                return {}
             fail(f'Spotify OAuth file not found: {self.oauth_path}')
         try:
             return json.loads(self.oauth_path.read_text())
         except Exception as exc:
+            if allow_missing:
+                return {}
             fail(f'Failed to read Spotify OAuth file: {exc}')
 
     def _save_payload(self) -> None:
@@ -265,6 +293,8 @@ class SpotifySession:
         self.oauth_path.write_text(json.dumps(self.payload, indent=2, sort_keys=True))
 
     def refresh(self) -> None:
+        if not self.refresh_enabled:
+            fail('Spotify access token expired during import. Retry once from the UI.')
         status, data = http_json(
             'POST',
             TOKEN_URL,
@@ -289,7 +319,16 @@ class SpotifySession:
         self._save_payload()
 
     def ensure_access_token(self) -> str:
-        if self.access_token and self.expires_at > int(time.time()) + self.min_access_ttl_seconds:
+        now = int(time.time())
+        if self.access_token and self.expires_at > now + self.min_access_ttl_seconds:
+            return self.access_token
+
+        # In read-only token mode we intentionally do not refresh from this
+        # worker process to avoid OAuth token write races.
+        if not self.refresh_enabled:
+            if self.access_token and self.expires_at > now + 5:
+                return self.access_token
+            fail('Spotify access token expired during import. Retry once from the UI.')
             return self.access_token
         self.refresh()
         return self.access_token
@@ -317,9 +356,12 @@ class SpotifySession:
             headers = {'Authorization': f'Bearer {token}'}
             status, data = http_json(method, url, headers=headers, json_body=json_body)
             if status == 401:
-                self.refresh()
-                headers['Authorization'] = f'Bearer {self.access_token}'
-                status, data = http_json(method, url, headers=headers, json_body=json_body)
+                if self.refresh_enabled:
+                    self.refresh()
+                    headers['Authorization'] = f'Bearer {self.access_token}'
+                    status, data = http_json(method, url, headers=headers, json_body=json_body)
+                else:
+                    fail('Spotify access token expired during import. Retry once from the UI.')
 
             if status < 300:
                 return data
@@ -361,6 +403,19 @@ def parse_track(item: Dict[str, Any]) -> Dict[str, Any] | None:
         'artists': artists,
         'duration_ms': duration_ms,
     }
+
+
+def extract_playlist_item_track(raw_item: Any) -> Dict[str, Any]:
+    if not isinstance(raw_item, dict):
+        return {}
+    # Migration-compatible payloads:
+    # - legacy playlist endpoint wraps with {"track": {...}}
+    # - new endpoint wraps with {"item": {...}}
+    if isinstance(raw_item.get('item'), dict):
+        return raw_item.get('item') or {}
+    if isinstance(raw_item.get('track'), dict):
+        return raw_item.get('track') or {}
+    return raw_item
 
 
 def resolve_tracks(session: SpotifySession, spotify_uri: str) -> Tuple[str, Dict[str, Any], List[Dict[str, Any]]]:
@@ -408,12 +463,12 @@ def resolve_tracks(session: SpotifySession, spotify_uri: str) -> Tuple[str, Dict
         title = str(playlist.get('name', '')).strip() or media_id
         snapshot_id = str(playlist.get('snapshot_id', '')).strip()
 
-        next_url = f'{API_BASE}/playlists/{media_id}/tracks?limit=100'
+        # Use the migration-compatible endpoint and payload format.
+        next_url = f'{API_BASE}/playlists/{media_id}/items?limit=50'
         while next_url:
             page = session.request('GET', next_url)
             for wrapped in page.get('items', []) or []:
-                track_obj = wrapped.get('track') if isinstance(wrapped, dict) else None
-                track = parse_track(track_obj or {})
+                track = parse_track(extract_playlist_item_track(wrapped))
                 if track:
                     tracks.append(track)
             next_url = str(page.get('next', '') or '')
@@ -574,31 +629,29 @@ def start_librespot(
 def start_capture(
     fifo_path: Path,
     out_path: Path,
-    duration_s: float,
+    capture_bytes: int,
     audio_codec_args: List[str],
 ) -> subprocess.Popen[str]:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        'ffmpeg',
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-nostdin',
-        '-y',
-        '-f',
-        's16le',
-        '-ar',
-        '44100',
-        '-ac',
-        '2',
-        '-i',
-        str(fifo_path),
-        '-t',
-        f'{duration_s:.3f}',
-        *audio_codec_args,
-        str(out_path),
-    ]
-    return subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    byte_count = max(PCM_BYTES_PER_SECOND // 10, int(capture_bytes))
+    codec = ' '.join(shlex.quote(part) for part in audio_codec_args)
+    cmd = (
+        f'head -c {byte_count} < {shlex.quote(str(fifo_path))} | '
+        'ffmpeg -hide_banner -loglevel error -nostdin -y '
+        '-f s16le '
+        f'-ar {PCM_SAMPLE_RATE} '
+        f'-ac {PCM_CHANNELS} '
+        '-i pipe:0 '
+        f'{codec} '
+        f'{shlex.quote(str(out_path))}'
+    )
+    return subprocess.Popen(
+        ['bash', '-lc', cmd],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
 
 
 def capture_tracks(
@@ -613,7 +666,9 @@ def capture_tracks(
     numbered: bool,
     rel_result_for_single: bool,
 ) -> Path:
-    fifo_path = Path('/tmp/musicbox-librespot-capture.pcm')
+    # Use a per-process FIFO so stale readers from earlier failed jobs cannot
+    # consume bytes from current captures.
+    fifo_path = Path(f'/tmp/musicbox-librespot-capture-{os.getpid()}.pcm')
     ensure_fifo(fifo_path)
     log_path = Path('/tmp/librespot-capture.log')
     runtime_device = capture_device_name(device_name)
@@ -656,24 +711,60 @@ def capture_tracks(
             if is_valid_audio_file(out_path):
                 continue
 
-            capture_s = max(1.5, (float(track['duration_ms']) / 1000.0) + 0.8)
-            ffmpeg = start_capture(fifo_path, out_path, capture_s, codec_args)
-            time.sleep(0.3)
-            session.request('PUT', '/me/player/play', params={'device_id': device_id}, json_body={'uris': [track['uri']]})
+            max_attempts = 2
+            success = False
+            last_error = ''
+            for attempt in range(1, max_attempts + 1):
+                capture_s = max(1.5, (float(track['duration_ms']) / 1000.0) + 0.8)
+                capture_bytes = int(capture_s * PCM_BYTES_PER_SECOND)
+                ffmpeg = start_capture(fifo_path, out_path, capture_bytes, codec_args)
+                time.sleep(0.3)
+                session.request('PUT', '/me/player/play', params={'device_id': device_id}, json_body={'uris': [track['uri']]})
 
-            timeout_s = capture_s + 20.0
-            try:
-                _, ffmpeg_stderr = ffmpeg.communicate(timeout=timeout_s)
-            except subprocess.TimeoutExpired:
-                ffmpeg.kill()
-                _, ffmpeg_stderr = ffmpeg.communicate(timeout=2)
-                fail(f'Capture timeout for {track["uri"]}: {ffmpeg_stderr or "ffmpeg timeout"}')
+                timeout_s = capture_s + 60.0
+                ffmpeg_stderr = ''
+                timed_out = False
+                try:
+                    _, ffmpeg_stderr = ffmpeg.communicate(timeout=timeout_s)
+                except subprocess.TimeoutExpired:
+                    timed_out = True
+                    try:
+                        os.killpg(ffmpeg.pid, signal.SIGTERM)
+                    except Exception:
+                        ffmpeg.kill()
+                    try:
+                        _, ffmpeg_stderr = ffmpeg.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(ffmpeg.pid, signal.SIGKILL)
+                        except Exception:
+                            ffmpeg.kill()
+                        _, ffmpeg_stderr = ffmpeg.communicate(timeout=5)
+                finally:
+                    try:
+                        session.request('PUT', '/me/player/pause', params={'device_id': device_id})
+                    except Exception:
+                        pass
 
-            session.request('PUT', '/me/player/pause', params={'device_id': device_id})
-            if ffmpeg.returncode != 0:
-                fail(f'ffmpeg failed for {track["uri"]}: {ffmpeg_stderr or "unknown ffmpeg error"}')
-            if not is_valid_audio_file(out_path):
-                fail(f'Capture produced invalid file for {track["uri"]}: {out_path}')
+                if timed_out:
+                    last_error = f'Capture timeout for {track["uri"]} (attempt {attempt}/{max_attempts}): {ffmpeg_stderr or "ffmpeg timeout"}'
+                elif ffmpeg.returncode != 0:
+                    last_error = f'ffmpeg failed for {track["uri"]} (attempt {attempt}/{max_attempts}): {ffmpeg_stderr or "unknown ffmpeg error"}'
+                elif not is_valid_audio_file(out_path):
+                    last_error = f'Capture produced invalid file for {track["uri"]} (attempt {attempt}/{max_attempts}): {out_path}'
+                else:
+                    success = True
+                    break
+
+                try:
+                    if out_path.exists():
+                        out_path.unlink()
+                except Exception:
+                    pass
+                time.sleep(1.0)
+
+            if not success:
+                fail(last_error or f'Capture failed for {track["uri"]}')
             time.sleep(0.3)
     finally:
         if librespot.poll() is None:

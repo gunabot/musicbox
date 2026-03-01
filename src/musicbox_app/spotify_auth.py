@@ -99,6 +99,12 @@ class SpotifyAuthManager:
         payload['updated_at'] = self._now()
         return payload
 
+    def _is_revoked_refresh_error(self, message: str) -> bool:
+        text = str(message or '').strip().lower()
+        if not text:
+            return False
+        return 'invalid_grant' in text or 'refresh token revoked' in text or 'revoked' in text
+
     def set_client_id(self, client_id: str) -> Dict[str, Any]:
         value = str(client_id or '').strip()
         if not value:
@@ -284,17 +290,46 @@ class SpotifyAuthManager:
         return self.status()
 
     def get_access_token(self, *, force_refresh: bool = False) -> str:
+        context = self.get_access_context(force_refresh=force_refresh)
+        return str(context.get('access_token', '')).strip()
+
+    def get_access_context(
+        self,
+        *,
+        force_refresh: bool = False,
+        min_ttl_seconds: int = 30,
+    ) -> Dict[str, Any]:
+        ttl = max(5, int(min_ttl_seconds))
         with self._lock:
             payload = self._load()
             access_token = str(payload.get('access_token', '')).strip()
             expires_at = int(payload.get('expires_at', 0) or 0)
-            if access_token and not force_refresh and expires_at > self._now() + 30:
-                return access_token
+            now = self._now()
+            if access_token and not force_refresh and expires_at > now + ttl:
+                return {
+                    'access_token': access_token,
+                    'expires_at': expires_at,
+                }
 
-            payload = self._refresh_with_payload(payload)
+            try:
+                payload = self._refresh_with_payload(payload)
+            except Exception as exc:
+                message = str(exc).strip()
+                if self._is_revoked_refresh_error(message):
+                    for key in ['access_token', 'refresh_token', 'expires_at', 'token_type', 'scope', 'profile', 'pending']:
+                        payload.pop(key, None)
+                    payload['updated_at'] = self._now()
+                    self._save(payload)
+                    self.store.add_event('SPOTIFY_REFRESH_REVOKED reconnect required', level='error')
+                    raise RuntimeError('Spotify authorization expired. Please reconnect Spotify in Settings.')
+                raise
+
             self._save(payload)
             self.store.add_event('SPOTIFY_TOKEN_REFRESHED')
-            return str(payload.get('access_token', '')).strip()
+            return {
+                'access_token': str(payload.get('access_token', '')).strip(),
+                'expires_at': int(payload.get('expires_at', 0) or 0),
+            }
 
     def spotify_api_request(
         self,

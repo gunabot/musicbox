@@ -80,6 +80,15 @@ Map RFID cards to Spotify content (playlist/album/track) with reliable playback 
 - Default fetch command is `scripts/spotify-cache-fetch` (librespot-based).
 - This keeps playback controls unified because everything goes through MPV after cache resolution.
 
+## Migration compatibility update (2026-03-01)
+- Search requests now cap `limit` at 10 (Spotify Dev Mode migration behavior).
+- Playlist import metadata uses `/playlists/{id}/items` and supports both:
+  - new wrapper: `items[].item`
+  - legacy wrapper: `items[].track`
+- Token handling hardened to avoid refresh-token races:
+  - web service is token refresh owner
+  - capture worker uses provided access token in read-only mode
+
 ## Notes
 - Spotify Premium is required for playback transfer/control.
 - OAuth scope must include `streaming` for librespot access-token auth.

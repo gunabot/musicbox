@@ -70,7 +70,7 @@ class SpotifyCacheResolver:
             raise RuntimeError('spotify fetch command is empty')
         return [*parts, uri, str(self.import_root), str(MEDIA_DIR)]
 
-    def _build_env(self) -> Dict[str, str]:
+    def _build_env(self, *, access_token: str, expires_at: int) -> Dict[str, str]:
         status = self.spotify_auth.status()
         env = dict(os.environ)
         env['MUSICBOX_SPOTIFY_OAUTH_PATH'] = str(SPOTIFY_OAUTH_PATH)
@@ -81,6 +81,12 @@ class SpotifyCacheResolver:
         env['MUSICBOX_SPOTIFY_DEVICE_NAME'] = str(status.get('device_name', '') or '')
         env['MUSICBOX_SPOTIFY_CACHE_FORMAT'] = str(SPOTIFY_CACHE_FORMAT)
         env['MUSICBOX_SPOTIFY_CACHE_BITRATE'] = str(SPOTIFY_CACHE_BITRATE)
+        env['MUSICBOX_SPOTIFY_ACCESS_TOKEN'] = str(access_token or '').strip()
+        env['MUSICBOX_SPOTIFY_ACCESS_EXPIRES_AT'] = str(int(expires_at or 0))
+        # Keep token lifecycle centralized in the web service. The fetch worker
+        # consumes a provided access token and does not refresh/write OAuth state.
+        env['MUSICBOX_SPOTIFY_ENABLE_REFRESH'] = '0'
+        env['MUSICBOX_SPOTIFY_MIN_ACCESS_TTL_SECONDS'] = '15'
         return env
 
     def resolve(self, target: str, *, refresh: bool = False) -> str:
@@ -118,8 +124,18 @@ class SpotifyCacheResolver:
 
             self.import_root.mkdir(parents=True, exist_ok=True)
             cmd = self._build_cmd(uri)
+            token_ctx = self.spotify_auth.get_access_context(force_refresh=True, min_ttl_seconds=300)
+            access_token = str(token_ctx.get('access_token', '')).strip()
+            expires_at = int(token_ctx.get('expires_at', 0) or 0)
+            if not access_token:
+                raise RuntimeError('Spotify access token unavailable. Please reconnect Spotify.')
             self.store.add_event(f'SPOTIFY_CACHE_MISS {uri}')
-            proc = subprocess.run(cmd, text=True, capture_output=True, env=self._build_env())
+            proc = subprocess.run(
+                cmd,
+                text=True,
+                capture_output=True,
+                env=self._build_env(access_token=access_token, expires_at=expires_at),
+            )
             if proc.returncode != 0:
                 stderr = (proc.stderr or '').strip()
                 raise RuntimeError(stderr or f'fetch command failed with code {proc.returncode}')

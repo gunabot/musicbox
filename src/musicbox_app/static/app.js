@@ -326,7 +326,7 @@
     } else if (premiumKnown && !isPremium) {
       guidance = 'Spotify Premium is required for transfer/capture playback.';
     } else if (!accessValid) {
-      guidance = 'Spotify token is refreshing. Please wait a moment.';
+      guidance = 'Token expired; next Spotify search/import will refresh automatically.';
     } else {
       guidance = 'Ready: first play captures into cache, then playback uses local library.';
     }
@@ -338,7 +338,8 @@
       hasStreamingScope,
       premiumKnown,
       isPremium,
-      ready: configured && connected && hasStreamingScope && accessValid && (!premiumKnown || isPremium),
+      canSearch: configured && connected,
+      ready: configured && connected && hasStreamingScope && (!premiumKnown || isPremium),
       guidance,
     };
   }
@@ -379,6 +380,9 @@
     setDisabled('spotify-disconnect', !caps.connected, 'Spotify is not connected');
     setDisabled('spotify-cache-btn', !caps.ready, 'Connect Spotify with streaming scope first');
     setDisabled('spotify-cache-uri', !caps.connected, 'Connect Spotify first');
+    setDisabled('spotify-search-btn', !caps.canSearch, 'Connect Spotify first');
+    setDisabled('spotify-search-query', !caps.canSearch, 'Connect Spotify first');
+    setDisabled('spotify-search-type', !caps.canSearch, 'Connect Spotify first');
   }
 
   function renderStatus(snapshot) {
@@ -1625,6 +1629,10 @@
     if (!tbody) {
       return;
     }
+    if (hasActiveSelectionInElement(tbody)) {
+      return;
+    }
+    const caps = spotifyCapabilities(state.spotify || {});
     tbody.textContent = '';
 
     if (!state.spotifyResults.length) {
@@ -1712,6 +1720,8 @@
       const cacheBtn = document.createElement('button');
       const refreshPlaylist = kind === 'playlist';
       cacheBtn.textContent = refreshPlaylist ? 'Sync Playlist' : 'Add To Library';
+      cacheBtn.disabled = !caps.ready || !uri;
+      cacheBtn.title = cacheBtn.disabled ? 'Connect Spotify with streaming scope first' : '';
       cacheBtn.addEventListener('click', async () => {
         try {
           await queueSpotifyCacheJob(uri, { refresh: refreshPlaylist });
@@ -1740,6 +1750,9 @@
   function renderSpotifyJobs() {
     const tbody = $('spotify-jobs-body');
     if (!tbody) {
+      return;
+    }
+    if (hasActiveSelectionInElement(tbody)) {
       return;
     }
     tbody.textContent = '';
@@ -1813,8 +1826,8 @@
   async function searchSpotify() {
     await refreshSpotifyStatus();
     const caps = spotifyCapabilities(state.spotify || {});
-    if (!caps.ready) {
-      toast(caps.guidance, 'warning');
+    if (!caps.canSearch) {
+      toast('Connect Spotify first, then search.', 'warning');
       return;
     }
 
@@ -1825,7 +1838,7 @@
     }
     const type = ($('spotify-search-type').value || 'track,album,playlist').trim();
     const payload = await apiFetch(
-      `/api/spotify/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(type)}&limit=12`
+      `/api/spotify/search?q=${encodeURIComponent(query)}&type=${encodeURIComponent(type)}&limit=10`
     );
     state.spotifySearchQuery = query;
     state.spotifySearchType = type;

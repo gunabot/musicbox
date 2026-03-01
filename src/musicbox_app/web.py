@@ -286,9 +286,9 @@ def create_app() -> Flask:
             return _json_error('spotify target required')
         refresh = bool(data.get('refresh', False))
         try:
-            # Force-refresh before long-running capture/import jobs so we fail fast
-            # on revoked credentials instead of dying mid-job.
-            spotify_auth.get_access_token(force_refresh=True)
+            # Validate auth/session early for clean UI errors. The resolver
+            # refreshes right before a real capture miss when needed.
+            spotify_auth.get_access_token(force_refresh=False)
             async_mode = bool(data.get('async', False))
             if async_mode:
                 job = spotify_jobs.enqueue(target, refresh=refresh)
@@ -314,7 +314,8 @@ def create_app() -> Flask:
         requested = [part.strip() for part in raw_type.split(',') if part.strip()]
         allowed_types = ['track', 'album', 'playlist']
         search_types = [item for item in requested if item in allowed_types] or ['track', 'album', 'playlist']
-        limit = max(1, min(25, _int_param(request.args.get('limit'), 12)))
+        # Dev Mode migration caps Search at 10 results per type.
+        limit = max(1, min(10, _int_param(request.args.get('limit'), 10)))
 
         try:
             payload_status = spotify_auth.status()
@@ -392,8 +393,13 @@ def create_app() -> Flask:
                 images = item.get('images') if isinstance(item.get('images'), list) else []
                 first_image = images[0] if images and isinstance(images[0], dict) else {}
                 image = str(first_image.get('url', '')).strip()
+                # Migration-compatible: playlist object field can be `tracks`
+                # (legacy) or `items` (new).
                 tracks_obj = item.get('tracks') if isinstance(item.get('tracks'), dict) else {}
+                items_obj = item.get('items') if isinstance(item.get('items'), dict) else {}
                 count = _int_param(tracks_obj.get('total'), 0)
+                if count <= 0:
+                    count = _int_param(items_obj.get('total'), 0)
                 count_text = f'{count} tracks' if count > 0 else ''
                 subtitle = ' • '.join([part for part in [owner_name, count_text] if part])
                 items.append({
