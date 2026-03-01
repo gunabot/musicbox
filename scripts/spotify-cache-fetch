@@ -63,6 +63,15 @@ def slug(value: str, fallback: str = 'item') -> str:
     return text or fallback
 
 
+def capture_device_name(base_name: str) -> str:
+    base = re.sub(r'[^A-Za-z0-9 _-]+', '', str(base_name or '')).strip() or 'musicbox'
+    base = re.sub(r'\s+', ' ', base).strip()
+    # Keep room for "-12345" suffix and stay under common device name limits.
+    base = base[:26].rstrip(' -') or 'musicbox'
+    suffix = f'-{os.getpid() % 100000:05d}'
+    return f'{base}{suffix}'
+
+
 def normalize_cache_format(value: str) -> str:
     fmt = str(value or '').strip().lower() or DEFAULT_CACHE_FORMAT
     if fmt not in SUPPORTED_CACHE_FORMATS:
@@ -600,6 +609,7 @@ def capture_tracks(
     fifo_path = Path('/tmp/musicbox-librespot-capture.pcm')
     ensure_fifo(fifo_path)
     log_path = Path('/tmp/librespot-capture.log')
+    runtime_device = capture_device_name(device_name)
 
     try:
         baseline_ids = {
@@ -612,7 +622,7 @@ def capture_tracks(
 
     librespot = start_librespot(
         session.ensure_access_token(),
-        device_name,
+        runtime_device,
         fifo_path,
         Path('/tmp'),
         librespot_bin,
@@ -620,7 +630,7 @@ def capture_tracks(
     try:
         device_id = wait_for_device_id(
             session,
-            device_name=device_name,
+            device_name=runtime_device,
             timeout_s=90,
             baseline_ids=baseline_ids,
             librespot=librespot,
