@@ -308,8 +308,10 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 # Fallback poll keeps it working even if edge detection is noisy.
                 if not pending_states:
                     state = rot_state()
-                    if state != last_state:
-                        pending_states = [state]
+                    while state != last_state and len(pending_states) < 12:
+                        pending_states.append(state)
+                        time.sleep(0.00015)
+                        state = rot_state()
 
                 for state in pending_states:
                     if state == last_state:
