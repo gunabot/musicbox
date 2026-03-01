@@ -291,17 +291,40 @@ class SpotifySession:
             query = urllib.parse.urlencode({k: v for k, v in params.items() if v is not None}, doseq=True)
             url = f'{url}?{query}'
 
-        token = self.ensure_access_token()
-        headers = {'Authorization': f'Bearer {token}'}
-        status, data = http_json(method, url, headers=headers, json_body=json_body)
-        if status == 401:
-            self.refresh()
-            headers['Authorization'] = f'Bearer {self.access_token}'
+        transient_statuses = {429, 500, 502, 503, 504, 599}
+        max_attempts = 5
+        delay_s = 1.0
+        last_error = ''
+
+        for attempt in range(1, max_attempts + 1):
+            token = self.ensure_access_token()
+            headers = {'Authorization': f'Bearer {token}'}
             status, data = http_json(method, url, headers=headers, json_body=json_body)
-        if status >= 300:
-            message = data.get('error_description') or data.get('error', {}).get('message') or data.get('error')
-            fail(message or f'Spotify API call failed ({status} {method} {url})')
-        return data
+            if status == 401:
+                self.refresh()
+                headers['Authorization'] = f'Bearer {self.access_token}'
+                status, data = http_json(method, url, headers=headers, json_body=json_body)
+
+            if status < 300:
+                return data
+
+            err = data.get('error')
+            if isinstance(err, dict):
+                err_msg = str(err.get('message', '')).strip()
+            else:
+                err_msg = str(err).strip() if err is not None else ''
+            message = str(data.get('error_description', '')).strip() or err_msg
+            last_error = message or f'Spotify API call failed ({status} {method} {url})'
+
+            if status in transient_statuses and attempt < max_attempts:
+                time.sleep(delay_s)
+                delay_s = min(8.0, delay_s * 1.8)
+                continue
+
+            fail(last_error)
+
+        fail(last_error or f'Spotify API call failed ({method} {url})')
+        return {}
 
 
 def parse_track(item: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -417,17 +440,85 @@ def find_librespot_binary() -> str:
     return 'librespot'
 
 
-def wait_for_device_id(session: SpotifySession, device_name: str, timeout_s: int = 30) -> str:
-    deadline = time.time() + timeout_s
+def read_log_tail(path: Path, max_lines: int = 24) -> str:
+    if not path.exists():
+        return ''
+    try:
+        lines = path.read_text(errors='replace').splitlines()
+    except Exception:
+        return ''
+    return '\n'.join(lines[-max_lines:])
+
+
+def list_devices(session: SpotifySession) -> List[Dict[str, Any]]:
+    payload = session.request('GET', '/me/player/devices')
+    devices = payload.get('devices') if isinstance(payload, dict) else []
+    return [item for item in (devices or []) if isinstance(item, dict)]
+
+
+def choose_device_id(
+    devices: List[Dict[str, Any]],
+    *,
+    preferred_name: str,
+    baseline_ids: set[str],
+) -> str:
+    preferred = str(preferred_name or '').strip().casefold()
+
+    if preferred:
+        for device in devices:
+            name = str(device.get('name', '')).strip().casefold()
+            if name != preferred:
+                continue
+            device_id = str(device.get('id', '')).strip()
+            if device_id:
+                return device_id
+
+    for device in devices:
+        device_id = str(device.get('id', '')).strip()
+        if device_id and device_id not in baseline_ids:
+            return device_id
+
+    if preferred:
+        for device in devices:
+            name = str(device.get('name', '')).strip().casefold()
+            if preferred not in name and name not in preferred:
+                continue
+            device_id = str(device.get('id', '')).strip()
+            if device_id:
+                return device_id
+
+    return ''
+
+
+def wait_for_device_id(
+    session: SpotifySession,
+    device_name: str,
+    *,
+    timeout_s: int = 90,
+    baseline_ids: set[str] | None = None,
+    librespot: subprocess.Popen[str] | None = None,
+    log_path: Path | None = None,
+) -> str:
+    baseline = set(baseline_ids or set())
+    deadline = time.time() + max(10, int(timeout_s))
+
     while time.time() < deadline:
-        payload = session.request('GET', '/me/player/devices')
-        for device in payload.get('devices', []) or []:
-            if str(device.get('name', '')).strip() == device_name:
-                device_id = str(device.get('id', '')).strip()
-                if device_id:
-                    return device_id
+        if librespot is not None and librespot.poll() is not None:
+            tail = read_log_tail(log_path or Path('/tmp/librespot-capture.log'))
+            hint = f'\nlibrespot log tail:\n{tail}' if tail else ''
+            fail(f'librespot exited before capture device was ready (rc={librespot.returncode}){hint}')
+
+        devices = list_devices(session)
+        chosen = choose_device_id(devices, preferred_name=device_name, baseline_ids=baseline)
+        if chosen:
+            return chosen
         time.sleep(1.0)
-    fail(f'Spotify device "{device_name}" did not appear')
+
+    latest_names = [str(item.get('name', '')).strip() for item in list_devices(session)]
+    fail(
+        f'Spotify device "{device_name}" did not appear in {int(timeout_s)}s. '
+        f'Visible devices: {latest_names}'
+    )
     return ''
 
 
@@ -508,6 +599,16 @@ def capture_tracks(
 ) -> Path:
     fifo_path = Path('/tmp/musicbox-librespot-capture.pcm')
     ensure_fifo(fifo_path)
+    log_path = Path('/tmp/librespot-capture.log')
+
+    try:
+        baseline_ids = {
+            str(item.get('id', '')).strip()
+            for item in list_devices(session)
+            if str(item.get('id', '')).strip()
+        }
+    except Exception:
+        baseline_ids = set()
 
     librespot = start_librespot(
         session.ensure_access_token(),
@@ -517,7 +618,14 @@ def capture_tracks(
         librespot_bin,
     )
     try:
-        device_id = wait_for_device_id(session, device_name=device_name, timeout_s=35)
+        device_id = wait_for_device_id(
+            session,
+            device_name=device_name,
+            timeout_s=90,
+            baseline_ids=baseline_ids,
+            librespot=librespot,
+            log_path=log_path,
+        )
         session.request('PUT', '/me/player', json_body={'device_ids': [device_id], 'play': False})
         time.sleep(0.5)
         extension = CACHE_EXTENSION.get(cache_format, '.mp3')
