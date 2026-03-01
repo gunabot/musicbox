@@ -94,6 +94,8 @@ class SpotifyAuthManager:
         payload['access_token'] = access_token
         payload['expires_at'] = self._now() + max(60, expires_in - 15)
         if data.get('refresh_token'):
+            if str(payload.get('refresh_token', '')).strip():
+                payload['refresh_token_prev'] = str(payload.get('refresh_token', '')).strip()
             payload['refresh_token'] = str(data['refresh_token'])
         payload['token_type'] = str(data.get('token_type', payload.get('token_type', 'Bearer')))
         payload['updated_at'] = self._now()
@@ -311,11 +313,38 @@ class SpotifyAuthManager:
                     'expires_at': expires_at,
                 }
 
+            attempted_refresh = str(payload.get('refresh_token', '')).strip()
             try:
                 payload = self._refresh_with_payload(payload)
             except Exception as exc:
                 message = str(exc).strip()
                 if self._is_revoked_refresh_error(message):
+                    # A concurrent writer could have rotated the refresh token.
+                    # Try once with the latest on-disk token (or backup token)
+                    # before declaring the auth session dead.
+                    latest = self._load()
+                    latest_refresh = str(latest.get('refresh_token', '')).strip()
+                    backup_refresh = str(latest.get('refresh_token_prev', '')).strip()
+                    candidates = []
+                    if latest_refresh and latest_refresh != attempted_refresh:
+                        candidates.append(latest_refresh)
+                    if backup_refresh and backup_refresh not in candidates and backup_refresh != attempted_refresh:
+                        candidates.append(backup_refresh)
+
+                    for candidate in candidates:
+                        probe = dict(latest)
+                        probe['refresh_token'] = candidate
+                        try:
+                            probe = self._refresh_with_payload(probe)
+                        except Exception:
+                            continue
+                        self._save(probe)
+                        self.store.add_event('SPOTIFY_TOKEN_REFRESH_RECOVERED')
+                        return {
+                            'access_token': str(probe.get('access_token', '')).strip(),
+                            'expires_at': int(probe.get('expires_at', 0) or 0),
+                        }
+
                     for key in ['access_token', 'refresh_token', 'expires_at', 'token_type', 'scope', 'profile', 'pending']:
                         payload.pop(key, None)
                     payload['updated_at'] = self._now()
