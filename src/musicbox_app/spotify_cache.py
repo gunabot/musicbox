@@ -28,7 +28,6 @@ class SpotifyCacheResolver:
         self.import_root = SPOTIFY_CACHE_DIR
         self.index_path = SPOTIFY_CACHE_INDEX_PATH
         self.fetch_command = SPOTIFY_FETCH_COMMAND
-        self._lock = threading.RLock()
         self._fetch_lock = threading.Lock()
 
     def _safe_relpath(self, path_value: str) -> str:
