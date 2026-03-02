@@ -1,5 +1,4 @@
 import os
-import queue
 import subprocess
 import threading
 import time
@@ -270,8 +269,6 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             def set_led_state(pin: int, on: bool) -> None:
                 with seesaw_lock:
                     seesaw.digital_write(pin, bool(on))
-            led_queue: queue.Queue[tuple[str, list[int]]] = queue.Queue(maxsize=48)
-
             def line_value_to_bit(value: object) -> int:
                 if GpioValue is not None and value == GpioValue.ACTIVE:
                     return 1
@@ -311,44 +308,93 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             sw_state_cache = line_value_to_bit(start_values[2])
             store.add_event('GPIO_BACKEND libgpiod')
 
+            led_cond = threading.Condition()
+            led_state: Dict[str, object] = {
+                'direction': None,
+                'button_state': [0 for _ in LED_PINS],
+                'active_until': 0.0,
+                'seq': 0,
+            }
+
+            def apply_button_leds(button_state: list[int]) -> None:
+                with seesaw_lock:
+                    for idx, led_pin in enumerate(LED_PINS):
+                        on = idx < len(button_state) and button_state[idx] == 1
+                        seesaw.digital_write(led_pin, on)
+
             def rotary_led_sweep(direction: str, button_state: list[int]) -> None:
                 step_ms = store.get_setting('rotary_led_step_ms', 25)
                 step_s = max(0.005, min(0.25, step_ms / 1000.0))
                 order = LED_PINS if direction == 'CW' else list(reversed(LED_PINS))
+                state_seq = 0
+                with led_cond:
+                    try:
+                        state_seq = int(led_state.get('seq', 0))
+                    except Exception:
+                        state_seq = 0
+
+                def wait_step_or_interrupt(duration_s: float) -> bool:
+                    remaining = max(0.0, float(duration_s))
+                    while remaining > 0.0 and not led_stop.is_set():
+                        chunk = min(0.01, remaining)
+                        time.sleep(chunk)
+                        remaining -= chunk
+                        with led_cond:
+                            if int(led_state.get('seq', 0)) != state_seq:
+                                return False
+                            if str(led_state.get('direction', '')) != direction:
+                                return False
+                            if time.monotonic() > float(led_state.get('active_until', 0.0)):
+                                return False
+                    return not led_stop.is_set()
+
                 for led_pin in order:
                     if led_stop.is_set():
                         return
+                    with led_cond:
+                        if int(led_state.get('seq', 0)) != state_seq:
+                            return
+                        if str(led_state.get('direction', '')) != direction:
+                            return
+                        if time.monotonic() > float(led_state.get('active_until', 0.0)):
+                            return
                     with seesaw_lock:
                         seesaw.digital_write(led_pin, True)
-                    time.sleep(step_s)
+                    if not wait_step_or_interrupt(step_s):
+                        with seesaw_lock:
+                            seesaw.digital_write(led_pin, False)
+                        return
                     with seesaw_lock:
                         seesaw.digital_write(led_pin, False)
-                with seesaw_lock:
-                    for idx, led_pin in enumerate(LED_PINS):
-                        seesaw.digital_write(led_pin, button_state[idx] == 1)
+                apply_button_leds(button_state)
 
             def queue_led_sweep(direction: str, button_state: list[int]) -> None:
-                item = (direction, list(button_state))
-                try:
-                    led_queue.put_nowait(item)
-                except queue.Full:
-                    try:
-                        led_queue.get_nowait()
-                    except queue.Empty:
-                        pass
-                    try:
-                        led_queue.put_nowait(item)
-                    except queue.Full:
-                        pass
+                with led_cond:
+                    led_state['direction'] = direction
+                    led_state['button_state'] = list(button_state)
+                    # Keep animation alive only briefly after the last detent.
+                    led_state['active_until'] = time.monotonic() + 0.18
+                    led_state['seq'] = int(led_state.get('seq', 0)) + 1
+                    led_cond.notify()
 
             def led_worker() -> None:
                 while not led_stop.is_set():
-                    try:
-                        direction, button_state = led_queue.get(timeout=0.5)
-                    except queue.Empty:
+                    with led_cond:
+                        direction = led_state.get('direction')
+                        active_until = float(led_state.get('active_until', 0.0))
+                        button_state = list(led_state.get('button_state', [0 for _ in LED_PINS]))
+                        if not direction or time.monotonic() > active_until:
+                            led_state['direction'] = None
+                            wait_timeout = 0.05
+                        else:
+                            wait_timeout = 0.0
+                    if not direction or time.monotonic() > active_until:
+                        apply_button_leds(button_state)
+                        with led_cond:
+                            led_cond.wait(timeout=wait_timeout)
                         continue
                     try:
-                        rotary_led_sweep(direction, button_state)
+                        rotary_led_sweep(str(direction), button_state)
                     except Exception:
                         pass
 
