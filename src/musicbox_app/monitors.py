@@ -312,8 +312,9 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             led_state: Dict[str, object] = {
                 'direction': None,
                 'button_state': [0 for _ in LED_PINS],
-                'active_until': 0.0,
                 'seq': 0,
+                'sweeps_pending': 0,
+                'max_pending': 2,
             }
 
             def apply_button_leds(button_state: list[int]) -> None:
@@ -322,16 +323,10 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                         on = idx < len(button_state) and button_state[idx] == 1
                         seesaw.digital_write(led_pin, on)
 
-            def rotary_led_sweep(direction: str, button_state: list[int]) -> None:
+            def rotary_led_sweep(direction: str, button_state: list[int], state_seq: int) -> None:
                 step_ms = store.get_setting('rotary_led_step_ms', 25)
                 step_s = max(0.005, min(0.25, step_ms / 1000.0))
                 order = LED_PINS if direction == 'CW' else list(reversed(LED_PINS))
-                state_seq = 0
-                with led_cond:
-                    try:
-                        state_seq = int(led_state.get('seq', 0))
-                    except Exception:
-                        state_seq = 0
 
                 def wait_step_or_interrupt(duration_s: float) -> bool:
                     remaining = max(0.0, float(duration_s))
@@ -344,8 +339,6 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                                 return False
                             if str(led_state.get('direction', '')) != direction:
                                 return False
-                            if time.monotonic() > float(led_state.get('active_until', 0.0)):
-                                return False
                     return not led_stop.is_set()
 
                 for led_pin in order:
@@ -355,8 +348,6 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                         if int(led_state.get('seq', 0)) != state_seq:
                             return
                         if str(led_state.get('direction', '')) != direction:
-                            return
-                        if time.monotonic() > float(led_state.get('active_until', 0.0)):
                             return
                     with seesaw_lock:
                         seesaw.digital_write(led_pin, True)
@@ -370,31 +361,42 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
             def queue_led_sweep(direction: str, button_state: list[int]) -> None:
                 with led_cond:
-                    led_state['direction'] = direction
+                    next_direction = str(direction)
+                    previous_direction = str(led_state.get('direction') or '')
+                    led_state['direction'] = next_direction
                     led_state['button_state'] = list(button_state)
-                    # Keep animation alive only briefly after the last detent.
-                    led_state['active_until'] = time.monotonic() + 0.18
-                    led_state['seq'] = int(led_state.get('seq', 0)) + 1
+                    pending = int(led_state.get('sweeps_pending', 0))
+                    max_pending = max(1, int(led_state.get('max_pending', 2)))
+                    if previous_direction and previous_direction == next_direction:
+                        led_state['sweeps_pending'] = min(max_pending, pending + 1)
+                    else:
+                        # Direction change should interrupt immediately.
+                        led_state['seq'] = int(led_state.get('seq', 0)) + 1
+                        led_state['sweeps_pending'] = 1
                     led_cond.notify()
 
             def led_worker() -> None:
                 while not led_stop.is_set():
+                    direction = ''
+                    button_state = [0 for _ in LED_PINS]
+                    state_seq = 0
                     with led_cond:
-                        direction = led_state.get('direction')
-                        active_until = float(led_state.get('active_until', 0.0))
                         button_state = list(led_state.get('button_state', [0 for _ in LED_PINS]))
-                        if not direction or time.monotonic() > active_until:
+                        pending = int(led_state.get('sweeps_pending', 0))
+                        if pending <= 0:
                             led_state['direction'] = None
-                            wait_timeout = 0.05
-                        else:
-                            wait_timeout = 0.0
-                    if not direction or time.monotonic() > active_until:
+                            apply_button_leds(button_state)
+                            led_cond.wait(timeout=0.05)
+                            continue
+                        led_state['sweeps_pending'] = max(0, pending - 1)
+                        direction = str(led_state.get('direction') or '')
+                        button_state = list(led_state.get('button_state', [0 for _ in LED_PINS]))
+                        state_seq = int(led_state.get('seq', 0))
+                    if not direction:
                         apply_button_leds(button_state)
-                        with led_cond:
-                            led_cond.wait(timeout=wait_timeout)
                         continue
                     try:
-                        rotary_led_sweep(str(direction), button_state)
+                        rotary_led_sweep(direction, button_state, state_seq)
                     except Exception:
                         pass
 
