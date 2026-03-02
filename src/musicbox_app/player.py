@@ -61,11 +61,16 @@ class PlayerManager:
             value = int(round(float(player.get('volume', 50))))
         except Exception:
             value = 50
-        return max(0, min(100, value))
+        return max(0, min(self._volume_max(), value))
+
+    def _volume_max(self) -> int:
+        value = self.store.get_setting('player_volume_max', 130)
+        return max(100, min(200, int(value)))
 
     def _start_target(self, target: Path, source: str, spotify_uri: str | None = None) -> None:
         self.stop()
         volume = self._desired_volume()
+        volume_max = self._volume_max()
 
         if target.is_dir():
             files = list_audio_files_recursive(target)
@@ -78,6 +83,7 @@ class PlayerManager:
                 '--really-quiet',
                 f'--audio-device={AUDIO_DEVICE}',
                 f'--volume={volume}',
+                f'--volume-max={volume_max}',
                 f'--input-ipc-server={MPV_SOCKET}',
                 f'--playlist={PLAYLIST_PATH}',
             ]
@@ -88,6 +94,7 @@ class PlayerManager:
                 '--really-quiet',
                 f'--audio-device={AUDIO_DEVICE}',
                 f'--volume={volume}',
+                f'--volume-max={volume_max}',
                 f'--input-ipc-server={MPV_SOCKET}',
                 str(target),
             ]
@@ -158,7 +165,7 @@ class PlayerManager:
             base = float(current['data'])
         else:
             base = float(self._desired_volume())
-        target = max(0.0, min(100.0, base + delta_value))
+        target = max(0.0, min(float(self._volume_max()), base + delta_value))
 
         # Best effort live apply if MPV IPC is available; otherwise keep the
         # desired volume in state and apply on the next playback start.

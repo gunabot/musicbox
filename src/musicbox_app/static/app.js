@@ -444,6 +444,18 @@
       volumeInput.value = String(volumePerTurn);
     }
 
+    const alsaPcmPercent = snapshot.settings && snapshot.settings.alsa_pcm_percent;
+    const alsaInput = $('alsa-pcm-percent');
+    if (alsaPcmPercent != null && alsaInput && document.activeElement !== alsaInput) {
+      alsaInput.value = String(alsaPcmPercent);
+    }
+
+    const playerVolumeMax = snapshot.settings && snapshot.settings.player_volume_max;
+    const maxInput = $('player-volume-max');
+    if (playerVolumeMax != null && maxInput && document.activeElement !== maxInput) {
+      maxInput.value = String(playerVolumeMax);
+    }
+
     if (snapshot.last_card) {
       const cardInput = $('map-card');
       if (cardInput && (!cardInput.value || cardInput.value === state.lastAutoCard)) {
@@ -1833,10 +1845,16 @@
   async function saveRotarySettings() {
     const ledInput = $('led-speed');
     const volumeInput = $('rotary-volume-per-turn');
+    const alsaInput = $('alsa-pcm-percent');
+    const maxInput = $('player-volume-max');
     const ledSpeed = clampInt(ledInput.value, 5, 250, 25);
     const volumePerTurn = clampInt(volumeInput.value, 20, 300, 100);
+    const alsaPcmPercent = clampInt(alsaInput.value, 40, 100, 100);
+    const playerVolumeMax = clampInt(maxInput.value, 100, 200, 130);
     ledInput.value = String(ledSpeed);
     volumeInput.value = String(volumePerTurn);
+    alsaInput.value = String(alsaPcmPercent);
+    maxInput.value = String(playerVolumeMax);
 
     const payload = await apiFetch('/api/settings', {
       method: 'POST',
@@ -1844,6 +1862,8 @@
       body: JSON.stringify({
         rotary_led_step_ms: ledSpeed,
         rotary_volume_per_turn: volumePerTurn,
+        alsa_pcm_percent: alsaPcmPercent,
+        player_volume_max: playerVolumeMax,
       }),
     });
     if (payload.settings && payload.settings.rotary_led_step_ms != null) {
@@ -1852,12 +1872,20 @@
     if (payload.settings && payload.settings.rotary_volume_per_turn != null) {
       $('rotary-volume-per-turn').value = String(payload.settings.rotary_volume_per_turn);
     }
+    if (payload.settings && payload.settings.alsa_pcm_percent != null) {
+      $('alsa-pcm-percent').value = String(payload.settings.alsa_pcm_percent);
+    }
+    if (payload.settings && payload.settings.player_volume_max != null) {
+      $('player-volume-max').value = String(payload.settings.player_volume_max);
+    }
     toast('Settings saved');
   }
 
   function bindSettings() {
     const ledInput = $('led-speed');
     const volumeInput = $('rotary-volume-per-turn');
+    const alsaInput = $('alsa-pcm-percent');
+    const maxInput = $('player-volume-max');
     const spotifyClient = $('spotify-client-id');
     const spotifyDevice = $('spotify-device-name');
 
@@ -1869,7 +1897,7 @@
       }
     };
 
-    [ledInput, volumeInput].forEach((input) => {
+    [ledInput, volumeInput, alsaInput, maxInput].forEach((input) => {
       input.addEventListener('change', () => {
         void saveRotarySettingsSafe();
       });

@@ -199,6 +199,18 @@ def create_app() -> Flask:
                 store.set_setting('rotary_volume_per_turn', value)
                 store.add_event(f'SET rotary_volume_per_turn={value}')
                 changed = True
+            if 'alsa_pcm_percent' in data:
+                value = int(data['alsa_pcm_percent'])
+                value = max(40, min(100, value))
+                store.set_setting('alsa_pcm_percent', value)
+                store.add_event(f'SET alsa_pcm_percent={value}')
+                changed = True
+            if 'player_volume_max' in data:
+                value = int(data['player_volume_max'])
+                value = max(100, min(200, value))
+                store.set_setting('player_volume_max', value)
+                store.add_event(f'SET player_volume_max={value}')
+                changed = True
             if changed:
                 store.save_settings()
             snapshot = store.snapshot(since_id=0, event_limit=1)

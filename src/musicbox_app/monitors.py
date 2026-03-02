@@ -1,4 +1,5 @@
 import os
+import queue
 import subprocess
 import threading
 import time
@@ -18,6 +19,7 @@ except Exception:  # pragma: no cover - optional runtime dependency
     smbus = None
 
 from .config import (
+    AUDIO_DEVICE,
     BUTTON_PINS,
     LED_PINS,
     MEDIA_DIR,
@@ -52,6 +54,32 @@ def _detect_audio_device() -> Optional[str]:
         if 'jieli' in lower or 'usb audio' in lower:
             return line.strip()
     return None
+
+
+def _audio_card_index() -> str:
+    value = str(AUDIO_DEVICE or '').strip().lower()
+    marker = 'plughw:'
+    if marker in value:
+        tail = value.split(marker, 1)[1]
+        card = tail.split(',', 1)[0].strip()
+        if card.isdigit():
+            return card
+    return '1'
+
+
+def _apply_alsa_pcm_percent(percent: int) -> tuple[bool, str]:
+    card = _audio_card_index()
+    try:
+        subprocess.run(
+            ['amixer', '-c', card, 'sset', 'PCM', f'{int(percent)}%'],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        return True, ''
+    except Exception as exc:
+        return False, str(exc)
 
 
 def _find_rfid_device() -> Optional[InputDevice]:
@@ -203,15 +231,19 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
     }
 
     while True:
+        led_stop = threading.Event()
         try:
             i2c = busio.I2C(board.SCL, board.SDA)
             seesaw = Seesaw(i2c, addr=SEESAW_ADDR)
-            for pin in BUTTON_PINS:
-                seesaw.pin_mode(pin, seesaw.INPUT_PULLUP)
-            for pin in LED_PINS:
-                seesaw.pin_mode(pin, seesaw.OUTPUT)
-                seesaw.digital_write(pin, False)
+            seesaw_lock = threading.Lock()
+            with seesaw_lock:
+                for pin in BUTTON_PINS:
+                    seesaw.pin_mode(pin, seesaw.INPUT_PULLUP)
+                for pin in LED_PINS:
+                    seesaw.pin_mode(pin, seesaw.OUTPUT)
+                    seesaw.digital_write(pin, False)
 
+            GPIO.setwarnings(False)
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(ROT_CLK, GPIO.IN, pull_up_down=GPIO.PUD_UP)
             GPIO.setup(ROT_DT, GPIO.IN, pull_up_down=GPIO.PUD_UP)
@@ -220,21 +252,25 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             store.update_health(seesaw=True)
             store.add_event('input monitor started')
 
+            button_mask = 0
+            for pin in BUTTON_PINS:
+                button_mask |= 1 << pin
+
             def read_buttons() -> list[int]:
-                mask = 0
-                for pin in BUTTON_PINS:
-                    mask |= 1 << pin
-                bulk = seesaw.digital_read_bulk(mask)
+                with seesaw_lock:
+                    bulk = seesaw.digital_read_bulk(button_mask)
                 return [0 if (bulk & (1 << pin)) else 1 for pin in BUTTON_PINS]
+
+            def set_led_state(pin: int, on: bool) -> None:
+                with seesaw_lock:
+                    seesaw.digital_write(pin, bool(on))
 
             def rot_state() -> int:
                 return (GPIO.input(ROT_CLK) << 1) | GPIO.input(ROT_DT)
 
-            rotary_events: deque[int] = deque(maxlen=256)
+            rotary_events: deque[int] = deque(maxlen=512)
             rotary_lock = threading.Lock()
-            led_hw_lock = threading.Lock()
-            led_queue: deque[tuple[str, list[int]]] = deque(maxlen=48)
-            led_cond = threading.Condition()
+            led_queue: queue.Queue[tuple[str, list[int]]] = queue.Queue(maxsize=48)
 
             def queue_rotary_state(_channel: int) -> None:
                 try:
@@ -267,28 +303,37 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 step_s = max(0.005, min(0.25, step_ms / 1000.0))
                 order = LED_PINS if direction == 'CW' else list(reversed(LED_PINS))
                 for led_pin in order:
-                    with led_hw_lock:
+                    if led_stop.is_set():
+                        return
+                    with seesaw_lock:
                         seesaw.digital_write(led_pin, True)
                     time.sleep(step_s)
-                    with led_hw_lock:
+                    with seesaw_lock:
                         seesaw.digital_write(led_pin, False)
-                for idx, led_pin in enumerate(LED_PINS):
-                    with led_hw_lock:
+                with seesaw_lock:
+                    for idx, led_pin in enumerate(LED_PINS):
                         seesaw.digital_write(led_pin, button_state[idx] == 1)
 
             def queue_led_sweep(direction: str, button_state: list[int]) -> None:
-                with led_cond:
-                    if len(led_queue) >= led_queue.maxlen:
-                        led_queue.popleft()
-                    led_queue.append((direction, list(button_state)))
-                    led_cond.notify()
+                item = (direction, list(button_state))
+                try:
+                    led_queue.put_nowait(item)
+                except queue.Full:
+                    try:
+                        led_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        led_queue.put_nowait(item)
+                    except queue.Full:
+                        pass
 
             def led_worker() -> None:
-                while True:
-                    with led_cond:
-                        while not led_queue:
-                            led_cond.wait(timeout=1.0)
-                        direction, button_state = led_queue.popleft()
+                while not led_stop.is_set():
+                    try:
+                        direction, button_state = led_queue.get(timeout=0.5)
+                    except queue.Empty:
+                        continue
                     try:
                         rotary_led_sweep(direction, button_state)
                     except Exception:
@@ -309,8 +354,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                     pressed = new == 1
                     store.add_event(f"BUTTON{idx} {'PRESSED' if pressed else 'RELEASED'}")
-                    with led_hw_lock:
-                        seesaw.digital_write(LED_PINS[idx - 1], pressed)
+                    set_led_state(LED_PINS[idx - 1], pressed)
 
                     if pressed:
                         if idx == 1:
@@ -334,11 +378,19 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                 # Fallback poll keeps it working even if edge detection is noisy.
                 if not pending_states:
-                    state = rot_state()
-                    while state != last_state and len(pending_states) < 40:
-                        pending_states.append(state)
-                        time.sleep(0.00015)
+                    probe_state = last_state
+                    idle_polls = 0
+                    for _ in range(72):
                         state = rot_state()
+                        if state != probe_state:
+                            pending_states.append(state)
+                            probe_state = state
+                            idle_polls = 0
+                        else:
+                            idle_polls += 1
+                            if pending_states and idle_polls >= 8:
+                                break
+                        time.sleep(0.00008)
 
                 for state in pending_states:
                     if state == last_state:
@@ -371,9 +423,10 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                 store.set_buttons(buttons)
                 store.set_rotary(sw=1 if sw == 0 else 0)
-                time.sleep(0.001)
+                time.sleep(0.0005)
 
         except Exception as exc:
+            led_stop.set()
             store.update_health(seesaw=False)
             store.add_event(f'INPUT_ERR {exc}', level='error')
             try:
@@ -476,7 +529,22 @@ def _player_watchdog_worker(player: PlayerManager) -> None:
 
 
 def _health_worker(store: AppStore) -> None:
+    last_applied_pcm: int | None = None
+    last_pcm_error: str | None = None
+
     while True:
+        target_pcm = store.get_setting('alsa_pcm_percent', 100)
+        target_pcm = max(40, min(100, int(target_pcm)))
+        if target_pcm != last_applied_pcm:
+            ok, err = _apply_alsa_pcm_percent(target_pcm)
+            if ok:
+                store.add_event(f'ALSA_PCM {target_pcm}%')
+                last_applied_pcm = target_pcm
+                last_pcm_error = None
+            elif err and err != last_pcm_error:
+                store.add_event(f'ALSA_PCM_ERR {err}', level='warning')
+                last_pcm_error = err
+
         audio = _detect_audio_device()
         ups = _read_ups_metrics()
         system = _read_system_metrics()
