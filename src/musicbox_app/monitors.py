@@ -3,11 +3,9 @@ import queue
 import subprocess
 import threading
 import time
-from collections import deque
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import RPi.GPIO as GPIO
 import board
 import busio
 from adafruit_seesaw.seesaw import Seesaw
@@ -257,12 +255,6 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     seesaw.pin_mode(pin, seesaw.OUTPUT)
                     seesaw.digital_write(pin, False)
 
-            GPIO.setwarnings(False)
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(ROT_CLK, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-            GPIO.setup(ROT_DT, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-            GPIO.setup(ROT_SW, GPIO.IN, pull_up_down=GPIO.PUD_UP)
-
             store.update_health(seesaw=True)
             store.add_event('input monitor started')
 
@@ -278,20 +270,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             def set_led_state(pin: int, on: bool) -> None:
                 with seesaw_lock:
                     seesaw.digital_write(pin, bool(on))
-
-            def rot_state() -> int:
-                return (GPIO.input(ROT_CLK) << 1) | GPIO.input(ROT_DT)
-
-            rotary_events: deque[int] = deque(maxlen=2048)
-            rotary_lock = threading.Lock()
             led_queue: queue.Queue[tuple[str, list[int]]] = queue.Queue(maxsize=48)
-            def queue_rotary_state(_channel: int) -> None:
-                try:
-                    state = rot_state()
-                except Exception:
-                    return
-                with rotary_lock:
-                    rotary_events.append(state)
 
             def line_value_to_bit(value: object) -> int:
                 if GpioValue is not None and value == GpioValue.ACTIVE:
@@ -303,81 +282,34 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 except Exception:
                     return 0
 
-            use_edge_capture = False
-            if gpiod is not None and GpioDirection is not None and GpioEdge is not None and GpioBias is not None:
-                try:
-                    rotary_request = gpiod.request_lines(
-                        '/dev/gpiochip0',
-                        consumer='musicbox-rotary',
-                        config={
-                            ROT_CLK: gpiod.LineSettings(
-                                direction=GpioDirection.INPUT,
-                                edge_detection=GpioEdge.BOTH,
-                                bias=GpioBias.PULL_UP,
-                            ),
-                            ROT_DT: gpiod.LineSettings(
-                                direction=GpioDirection.INPUT,
-                                edge_detection=GpioEdge.BOTH,
-                                bias=GpioBias.PULL_UP,
-                            ),
-                        },
-                    )
-                    start_values = rotary_request.get_values([ROT_CLK, ROT_DT])
-                    rotary_state_cache = (line_value_to_bit(start_values[0]) << 1) | line_value_to_bit(start_values[1])
+            if gpiod is None or GpioDirection is None or GpioEdge is None or GpioBias is None:
+                raise RuntimeError('libgpiod python bindings unavailable')
 
-                    def gpiod_rotary_worker() -> None:
-                        nonlocal rotary_state_cache
-                        while not led_stop.is_set():
-                            try:
-                                if not rotary_request.wait_edge_events(timeout=0.05):
-                                    continue
-                                events = rotary_request.read_edge_events(max_events=128)
-                                if not events:
-                                    continue
-                            except Exception:
-                                return
-                            with rotary_lock:
-                                for event in events:
-                                    if event.line_offset == ROT_CLK:
-                                        clk = 1 if event.event_type == gpiod.EdgeEvent.Type.RISING_EDGE else 0
-                                        rotary_state_cache = (clk << 1) | (rotary_state_cache & 0x1)
-                                    elif event.line_offset == ROT_DT:
-                                        dt = 1 if event.event_type == gpiod.EdgeEvent.Type.RISING_EDGE else 0
-                                        rotary_state_cache = (rotary_state_cache & 0x2) | dt
-                                    else:
-                                        continue
-                                    rotary_events.append(rotary_state_cache)
-
-                    threading.Thread(target=gpiod_rotary_worker, daemon=True).start()
-                    use_edge_capture = True
-                    store.add_event('ROTARY_BACKEND libgpiod')
-                except Exception as exc:
-                    store.add_event(f'ROTARY_GPIOD_FALLBACK {exc}', level='warning')
-                    if rotary_request is not None:
-                        try:
-                            rotary_request.release()
-                        except Exception:
-                            pass
-                        rotary_request = None
-
-            if not use_edge_capture:
-                try:
-                    # Event-driven edge capture avoids dropping transitions when
-                    # the encoder is turned quickly.
-                    GPIO.add_event_detect(ROT_CLK, GPIO.BOTH, callback=queue_rotary_state, bouncetime=1)
-                    GPIO.add_event_detect(ROT_DT, GPIO.BOTH, callback=queue_rotary_state, bouncetime=1)
-                    use_edge_capture = True
-                    store.add_event('ROTARY_BACKEND rpi-gpio-edge')
-                except Exception as exc:
-                    store.add_event(f'ROTARY_EDGE_FALLBACK {exc}', level='warning')
-                    try:
-                        GPIO.remove_event_detect(ROT_CLK)
-                    except Exception:
-                        pass
-                    try:
-                        GPIO.remove_event_detect(ROT_DT)
-                    except Exception:
-                        pass
+            rotary_request = gpiod.request_lines(
+                '/dev/gpiochip0',
+                consumer='musicbox-gpio',
+                config={
+                    ROT_CLK: gpiod.LineSettings(
+                        direction=GpioDirection.INPUT,
+                        edge_detection=GpioEdge.BOTH,
+                        bias=GpioBias.PULL_UP,
+                    ),
+                    ROT_DT: gpiod.LineSettings(
+                        direction=GpioDirection.INPUT,
+                        edge_detection=GpioEdge.BOTH,
+                        bias=GpioBias.PULL_UP,
+                    ),
+                    ROT_SW: gpiod.LineSettings(
+                        direction=GpioDirection.INPUT,
+                        edge_detection=GpioEdge.BOTH,
+                        bias=GpioBias.PULL_UP,
+                    ),
+                },
+            )
+            start_values = rotary_request.get_values([ROT_CLK, ROT_DT, ROT_SW])
+            rotary_state_cache = (line_value_to_bit(start_values[0]) << 1) | line_value_to_bit(start_values[1])
+            sw_state_cache = line_value_to_bit(start_values[2])
+            store.add_event('GPIO_BACKEND libgpiod')
 
             def rotary_led_sweep(direction: str, button_state: list[int]) -> None:
                 step_ms = store.get_setting('rotary_led_step_ms', 25)
@@ -423,8 +355,8 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             threading.Thread(target=led_worker, daemon=True).start()
 
             last_buttons = read_buttons()
-            last_sw = GPIO.input(ROT_SW)
-            last_state = rot_state()
+            last_sw = sw_state_cache
+            last_state = rotary_state_cache
             accum = 0
 
             while True:
@@ -450,60 +382,72 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                 last_buttons = buttons
 
-                pending_states: list[int] = []
-                if use_edge_capture:
-                    with rotary_lock:
-                        if rotary_events:
-                            pending_states = list(rotary_events)
-                            rotary_events.clear()
+                try:
+                    has_edges = rotary_request.wait_edge_events(timeout=0.0)
+                    edge_events = rotary_request.read_edge_events(max_events=256) if has_edges else []
+                except Exception as exc:
+                    raise RuntimeError(f'libgpiod edge read failed: {exc}') from exc
 
-                # Fallback poll keeps it working even if edge detection is noisy.
-                if not pending_states:
-                    probe_state = last_state
-                    idle_polls = 0
-                    for _ in range(72):
-                        state = rot_state()
-                        if state != probe_state:
-                            pending_states.append(state)
-                            probe_state = state
-                            idle_polls = 0
-                        else:
-                            idle_polls += 1
-                            if pending_states and idle_polls >= 8:
-                                break
-                        time.sleep(0.00008)
+                for event in edge_events:
+                    bit = 1 if event.event_type == gpiod.EdgeEvent.Type.RISING_EDGE else 0
+                    if event.line_offset == ROT_CLK:
+                        rotary_state_cache = (bit << 1) | (rotary_state_cache & 0x1)
+                        state = rotary_state_cache
+                        if state == last_state:
+                            continue
+                        step = trans.get((last_state, state), 0)
+                        if step:
+                            accum += step
+                        last_state = state
 
-                for state in pending_states:
-                    if state == last_state:
-                        continue
-                    step = trans.get((last_state, state), 0)
-                    if step:
-                        accum += step
-                    last_state = state
+                        while accum >= 4:
+                            volume_delta = _rotary_volume_delta(store)
+                            store.set_rotary(direction='CCW', pos_delta=-1)
+                            store.add_event('ROTARY CCW')
+                            player.add_volume(-volume_delta)
+                            queue_led_sweep('CCW', buttons)
+                            accum -= 4
 
-                    while accum >= 4:
-                        volume_delta = _rotary_volume_delta(store)
-                        store.set_rotary(direction='CCW', pos_delta=-1)
-                        store.add_event('ROTARY CCW')
-                        player.add_volume(-volume_delta)
-                        queue_led_sweep('CCW', buttons)
-                        accum -= 4
+                        while accum <= -4:
+                            volume_delta = _rotary_volume_delta(store)
+                            store.set_rotary(direction='CW', pos_delta=1)
+                            store.add_event('ROTARY CW')
+                            player.add_volume(+volume_delta)
+                            queue_led_sweep('CW', buttons)
+                            accum += 4
+                    elif event.line_offset == ROT_DT:
+                        rotary_state_cache = (rotary_state_cache & 0x2) | bit
+                        state = rotary_state_cache
+                        if state == last_state:
+                            continue
+                        step = trans.get((last_state, state), 0)
+                        if step:
+                            accum += step
+                        last_state = state
 
-                    while accum <= -4:
-                        volume_delta = _rotary_volume_delta(store)
-                        store.set_rotary(direction='CW', pos_delta=1)
-                        store.add_event('ROTARY CW')
-                        player.add_volume(+volume_delta)
-                        queue_led_sweep('CW', buttons)
-                        accum += 4
+                        while accum >= 4:
+                            volume_delta = _rotary_volume_delta(store)
+                            store.set_rotary(direction='CCW', pos_delta=-1)
+                            store.add_event('ROTARY CCW')
+                            player.add_volume(-volume_delta)
+                            queue_led_sweep('CCW', buttons)
+                            accum -= 4
 
-                sw = GPIO.input(ROT_SW)
-                if sw != last_sw:
-                    store.add_event(f"ROTARY_SW {'PRESSED' if sw == 0 else 'RELEASED'}")
-                    last_sw = sw
+                        while accum <= -4:
+                            volume_delta = _rotary_volume_delta(store)
+                            store.set_rotary(direction='CW', pos_delta=1)
+                            store.add_event('ROTARY CW')
+                            player.add_volume(+volume_delta)
+                            queue_led_sweep('CW', buttons)
+                            accum += 4
+                    elif event.line_offset == ROT_SW:
+                        sw_state_cache = bit
+                        if sw_state_cache != last_sw:
+                            store.add_event(f"ROTARY_SW {'PRESSED' if sw_state_cache == 0 else 'RELEASED'}")
+                            last_sw = sw_state_cache
 
                 store.set_buttons(buttons)
-                store.set_rotary(sw=1 if sw == 0 else 0)
+                store.set_rotary(sw=1 if last_sw == 0 else 0)
                 time.sleep(0.0005)
 
         except Exception as exc:
@@ -513,18 +457,6 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             try:
                 if rotary_request is not None:
                     rotary_request.release()
-            except Exception:
-                pass
-            try:
-                GPIO.remove_event_detect(ROT_CLK)
-            except Exception:
-                pass
-            try:
-                GPIO.remove_event_detect(ROT_DT)
-            except Exception:
-                pass
-            try:
-                GPIO.cleanup()
             except Exception:
                 pass
             time.sleep(2)
