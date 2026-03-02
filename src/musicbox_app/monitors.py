@@ -322,22 +322,31 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                             ),
                         },
                     )
+                    start_values = rotary_request.get_values([ROT_CLK, ROT_DT])
+                    rotary_state_cache = (line_value_to_bit(start_values[0]) << 1) | line_value_to_bit(start_values[1])
 
                     def gpiod_rotary_worker() -> None:
+                        nonlocal rotary_state_cache
                         while not led_stop.is_set():
                             try:
                                 if not rotary_request.wait_edge_events(timeout=0.05):
                                     continue
-                                events = rotary_request.read_edge_events(max_events=64)
+                                events = rotary_request.read_edge_events(max_events=128)
                                 if not events:
                                     continue
-                                values = rotary_request.get_values([ROT_CLK, ROT_DT])
-                                state = (line_value_to_bit(values[0]) << 1) | line_value_to_bit(values[1])
                             except Exception:
                                 return
                             with rotary_lock:
-                                for _ in events:
-                                    rotary_events.append(state)
+                                for event in events:
+                                    if event.line_offset == ROT_CLK:
+                                        clk = 1 if event.event_type == gpiod.EdgeEvent.Type.RISING_EDGE else 0
+                                        rotary_state_cache = (clk << 1) | (rotary_state_cache & 0x1)
+                                    elif event.line_offset == ROT_DT:
+                                        dt = 1 if event.event_type == gpiod.EdgeEvent.Type.RISING_EDGE else 0
+                                        rotary_state_cache = (rotary_state_cache & 0x2) | dt
+                                    else:
+                                        continue
+                                    rotary_events.append(rotary_state_cache)
 
                     threading.Thread(target=gpiod_rotary_worker, daemon=True).start()
                     use_edge_capture = True
