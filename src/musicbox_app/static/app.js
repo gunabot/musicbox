@@ -438,6 +438,12 @@
       ledInput.value = String(speed);
     }
 
+    const ledMaxPending = snapshot.settings && snapshot.settings.rotary_led_max_pending;
+    const ledPendingInput = $('rotary-led-max-pending');
+    if (ledMaxPending != null && ledPendingInput && document.activeElement !== ledPendingInput) {
+      ledPendingInput.value = String(ledMaxPending);
+    }
+
     const volumePerTurn = snapshot.settings && snapshot.settings.rotary_volume_per_turn;
     const volumeInput = $('rotary-volume-per-turn');
     if (volumePerTurn != null && volumeInput && document.activeElement !== volumeInput) {
@@ -1844,14 +1850,17 @@
 
   async function saveRotarySettings() {
     const ledInput = $('led-speed');
+    const ledPendingInput = $('rotary-led-max-pending');
     const volumeInput = $('rotary-volume-per-turn');
     const alsaInput = $('alsa-pcm-percent');
     const maxInput = $('player-volume-max');
     const ledSpeed = clampInt(ledInput.value, 5, 250, 25);
+    const ledMaxPending = clampInt(ledPendingInput.value, 0, 12, 0);
     const volumePerTurn = clampInt(volumeInput.value, 20, 300, 100);
     const alsaPcmPercent = clampInt(alsaInput.value, 40, 100, 100);
     const playerVolumeMax = clampInt(maxInput.value, 100, 200, 130);
     ledInput.value = String(ledSpeed);
+    ledPendingInput.value = String(ledMaxPending);
     volumeInput.value = String(volumePerTurn);
     alsaInput.value = String(alsaPcmPercent);
     maxInput.value = String(playerVolumeMax);
@@ -1861,6 +1870,7 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         rotary_led_step_ms: ledSpeed,
+        rotary_led_max_pending: ledMaxPending,
         rotary_volume_per_turn: volumePerTurn,
         alsa_pcm_percent: alsaPcmPercent,
         player_volume_max: playerVolumeMax,
@@ -1868,6 +1878,9 @@
     });
     if (payload.settings && payload.settings.rotary_led_step_ms != null) {
       $('led-speed').value = String(payload.settings.rotary_led_step_ms);
+    }
+    if (payload.settings && payload.settings.rotary_led_max_pending != null) {
+      $('rotary-led-max-pending').value = String(payload.settings.rotary_led_max_pending);
     }
     if (payload.settings && payload.settings.rotary_volume_per_turn != null) {
       $('rotary-volume-per-turn').value = String(payload.settings.rotary_volume_per_turn);
@@ -1883,6 +1896,7 @@
 
   function bindSettings() {
     const ledInput = $('led-speed');
+    const ledPendingInput = $('rotary-led-max-pending');
     const volumeInput = $('rotary-volume-per-turn');
     const alsaInput = $('alsa-pcm-percent');
     const maxInput = $('player-volume-max');
@@ -1897,7 +1911,7 @@
       }
     };
 
-    [ledInput, volumeInput, alsaInput, maxInput].forEach((input) => {
+    [ledInput, ledPendingInput, volumeInput, alsaInput, maxInput].forEach((input) => {
       input.addEventListener('change', () => {
         void saveRotarySettingsSafe();
       });

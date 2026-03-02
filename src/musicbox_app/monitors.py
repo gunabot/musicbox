@@ -314,7 +314,6 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 'button_state': [0 for _ in LED_PINS],
                 'seq': 0,
                 'sweeps_pending': 0,
-                'max_pending': 2,
             }
 
             def apply_button_leds(button_state: list[int]) -> None:
@@ -366,7 +365,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     led_state['direction'] = next_direction
                     led_state['button_state'] = list(button_state)
                     pending = int(led_state.get('sweeps_pending', 0))
-                    max_pending = max(1, int(led_state.get('max_pending', 2)))
+                    max_pending = max(0, min(12, store.get_setting('rotary_led_max_pending', 0)))
                     if previous_direction and previous_direction == next_direction:
                         led_state['sweeps_pending'] = min(max_pending, pending + 1)
                     else:

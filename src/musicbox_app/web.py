@@ -193,6 +193,12 @@ def create_app() -> Flask:
                 store.set_setting('rotary_led_step_ms', value)
                 store.add_event(f'SET rotary_led_step_ms={value}')
                 changed = True
+            if 'rotary_led_max_pending' in data:
+                value = int(data['rotary_led_max_pending'])
+                value = max(0, min(12, value))
+                store.set_setting('rotary_led_max_pending', value)
+                store.add_event(f'SET rotary_led_max_pending={value}')
+                changed = True
             if 'rotary_volume_per_turn' in data:
                 value = int(data['rotary_volume_per_turn'])
                 value = max(20, min(300, value))
