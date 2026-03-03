@@ -308,12 +308,13 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             sw_state_cache = line_value_to_bit(start_values[2])
             store.add_event('GPIO_BACKEND libgpiod')
 
-            led_cond = threading.Condition()
+            led_cond = threading.Condition(threading.RLock())
             led_state: Dict[str, object] = {
                 'direction': None,
                 'button_state': [0 for _ in LED_PINS],
                 'seq': 0,
                 'sweeps_pending': 0,
+                'boundary': None,
             }
             buttons_state_lock = threading.Lock()
             buttons_state = [0 for _ in LED_PINS]
@@ -323,6 +324,20 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     for idx, led_pin in enumerate(LED_PINS):
                         on = idx < len(button_state) and button_state[idx] == 1
                         seesaw.digital_write(led_pin, on)
+
+            def apply_boundary_leds(mode: str) -> None:
+                on = mode == 'max'
+                with seesaw_lock:
+                    for led_pin in LED_PINS:
+                        seesaw.digital_write(led_pin, on)
+
+            def apply_idle_leds(button_state: list[int]) -> None:
+                with led_cond:
+                    boundary = str(led_state.get('boundary') or '')
+                if boundary in {'max', 'min'}:
+                    apply_boundary_leds(boundary)
+                    return
+                apply_button_leds(button_state)
 
             def get_buttons_state() -> list[int]:
                 with buttons_state_lock:
@@ -348,7 +363,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     with seesaw_lock:
                         seesaw.digital_write(led_pin, False)
                     time.sleep(off_s)
-                apply_button_leds(get_buttons_state())
+                apply_idle_leds(get_buttons_state())
 
             def rotary_led_sweep(direction: str, button_state: list[int], state_seq: int) -> None:
                 step_ms = store.get_setting('rotary_led_step_ms', 25)
@@ -402,6 +417,49 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                         led_state['sweeps_pending'] = 1
                     led_cond.notify()
 
+            def set_led_volume_boundary(mode: str) -> None:
+                boundary = 'max' if mode == 'max' else 'min'
+                with led_cond:
+                    if str(led_state.get('boundary') or '') == boundary:
+                        return
+                    led_state['boundary'] = boundary
+                    led_state['direction'] = None
+                    led_state['sweeps_pending'] = 0
+                    led_state['seq'] = int(led_state.get('seq', 0)) + 1
+                    led_cond.notify()
+
+            def clear_led_volume_boundary() -> None:
+                with led_cond:
+                    if led_state.get('boundary') is None:
+                        return
+                    led_state['boundary'] = None
+                    led_state['seq'] = int(led_state.get('seq', 0)) + 1
+                    led_cond.notify()
+
+            def after_volume_step(direction: str, delta: float, pos_delta: int, button_state: list[int]) -> None:
+                store.set_rotary(direction=direction, pos_delta=pos_delta)
+                store.add_event(f'ROTARY {direction}')
+                player.add_volume(delta)
+
+                volume_value: float | None = None
+                try:
+                    snap = store.snapshot(since_id=0, event_limit=1)
+                    player_state = snap.get('player') if isinstance(snap.get('player'), dict) else {}
+                    volume_value = float(player_state.get('volume'))
+                except Exception:
+                    volume_value = None
+
+                volume_max = max(100, min(200, store.get_setting('player_volume_max', 130)))
+                if volume_value is not None and volume_value <= 0.0:
+                    set_led_volume_boundary('min')
+                    return
+                if volume_value is not None and volume_value >= float(volume_max):
+                    set_led_volume_boundary('max')
+                    return
+
+                clear_led_volume_boundary()
+                queue_led_sweep(direction, button_state)
+
             def led_worker() -> None:
                 while not led_stop.is_set():
                     direction = ''
@@ -412,7 +470,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                         pending = int(led_state.get('sweeps_pending', 0))
                         if pending <= 0:
                             led_state['direction'] = None
-                            apply_button_leds(button_state)
+                            apply_idle_leds(button_state)
                             led_cond.wait(timeout=0.05)
                             continue
                         led_state['sweeps_pending'] = max(0, pending - 1)
@@ -420,7 +478,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                         button_state = list(led_state.get('button_state', [0 for _ in LED_PINS]))
                         state_seq = int(led_state.get('seq', 0))
                     if not direction:
-                        apply_button_leds(button_state)
+                        apply_idle_leds(button_state)
                         continue
                     try:
                         rotary_led_sweep(direction, button_state, state_seq)
@@ -516,18 +574,12 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                         while accum >= 4:
                             volume_delta = _rotary_volume_delta(store)
-                            store.set_rotary(direction='CCW', pos_delta=-1)
-                            store.add_event('ROTARY CCW')
-                            player.add_volume(-volume_delta)
-                            queue_led_sweep('CCW', buttons)
+                            after_volume_step(direction='CCW', delta=-volume_delta, pos_delta=-1, button_state=buttons)
                             accum -= 4
 
                         while accum <= -4:
                             volume_delta = _rotary_volume_delta(store)
-                            store.set_rotary(direction='CW', pos_delta=1)
-                            store.add_event('ROTARY CW')
-                            player.add_volume(+volume_delta)
-                            queue_led_sweep('CW', buttons)
+                            after_volume_step(direction='CW', delta=+volume_delta, pos_delta=1, button_state=buttons)
                             accum += 4
                     elif event.line_offset == ROT_DT:
                         rotary_state_cache = (rotary_state_cache & 0x2) | bit
@@ -541,18 +593,12 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                         while accum >= 4:
                             volume_delta = _rotary_volume_delta(store)
-                            store.set_rotary(direction='CCW', pos_delta=-1)
-                            store.add_event('ROTARY CCW')
-                            player.add_volume(-volume_delta)
-                            queue_led_sweep('CCW', buttons)
+                            after_volume_step(direction='CCW', delta=-volume_delta, pos_delta=-1, button_state=buttons)
                             accum -= 4
 
                         while accum <= -4:
                             volume_delta = _rotary_volume_delta(store)
-                            store.set_rotary(direction='CW', pos_delta=1)
-                            store.add_event('ROTARY CW')
-                            player.add_volume(+volume_delta)
-                            queue_led_sweep('CW', buttons)
+                            after_volume_step(direction='CW', delta=+volume_delta, pos_delta=1, button_state=buttons)
                             accum += 4
                     elif event.line_offset == ROT_SW:
                         sw_state_cache = bit
