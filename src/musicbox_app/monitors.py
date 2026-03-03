@@ -315,12 +315,40 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 'seq': 0,
                 'sweeps_pending': 0,
             }
+            buttons_state_lock = threading.Lock()
+            buttons_state = [0 for _ in LED_PINS]
 
             def apply_button_leds(button_state: list[int]) -> None:
                 with seesaw_lock:
                     for idx, led_pin in enumerate(LED_PINS):
                         on = idx < len(button_state) and button_state[idx] == 1
                         seesaw.digital_write(led_pin, on)
+
+            def get_buttons_state() -> list[int]:
+                with buttons_state_lock:
+                    return list(buttons_state)
+
+            def set_buttons_state(new_state: list[int]) -> None:
+                with buttons_state_lock:
+                    buttons_state[:] = list(new_state)
+
+            def flash_led_triplet(led_pin: int, on_s: float = 0.08, off_s: float = 0.08) -> None:
+                with led_cond:
+                    led_state['seq'] = int(led_state.get('seq', 0)) + 1
+                    led_state['direction'] = None
+                    led_state['sweeps_pending'] = 0
+                    led_cond.notify()
+
+                for _ in range(3):
+                    if led_stop.is_set():
+                        return
+                    with seesaw_lock:
+                        seesaw.digital_write(led_pin, True)
+                    time.sleep(on_s)
+                    with seesaw_lock:
+                        seesaw.digital_write(led_pin, False)
+                    time.sleep(off_s)
+                apply_button_leds(get_buttons_state())
 
             def rotary_led_sweep(direction: str, button_state: list[int], state_seq: int) -> None:
                 step_ms = store.get_setting('rotary_led_step_ms', 25)
@@ -402,9 +430,47 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             threading.Thread(target=led_worker, daemon=True).start()
 
             last_buttons = read_buttons()
+            set_buttons_state(last_buttons)
             last_sw = sw_state_cache
             last_state = rotary_state_cache
             accum = 0
+
+            def status_led_worker() -> None:
+                try:
+                    flash_led_triplet(LED_PINS[0], on_s=0.08, off_s=0.08)
+                    store.add_event('LED_READY_FLASH')
+                except Exception:
+                    pass
+
+                next_low_alert_monotonic = 0.0
+                while not led_stop.is_set():
+                    low_battery = False
+                    try:
+                        snap = store.snapshot(since_id=0, event_limit=1)
+                        health = snap.get('health') if isinstance(snap.get('health'), dict) else {}
+                        pct = health.get('battery_percent')
+                        low_battery = pct is not None and float(pct) <= 10.0
+                    except Exception:
+                        low_battery = False
+
+                    now = time.monotonic()
+                    if low_battery:
+                        if now >= next_low_alert_monotonic:
+                            try:
+                                flash_led_triplet(LED_PINS[1], on_s=0.09, off_s=0.09)
+                                store.add_event('LED_BATTERY_LOW_FLASH')
+                            except Exception:
+                                pass
+                            next_low_alert_monotonic = now + 60.0
+                    else:
+                        next_low_alert_monotonic = 0.0
+
+                    for _ in range(10):
+                        if led_stop.is_set():
+                            break
+                        time.sleep(0.5)
+
+            threading.Thread(target=status_led_worker, daemon=True).start()
 
             while True:
                 buttons = read_buttons()
@@ -428,6 +494,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                             player.next()
 
                 last_buttons = buttons
+                set_buttons_state(last_buttons)
 
                 try:
                     has_edges = rotary_request.wait_edge_events(timeout=0.0)
