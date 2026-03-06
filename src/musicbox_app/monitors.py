@@ -319,6 +319,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 'seq': 0,
                 'sweeps_pending': 0,
                 'boundary': None,
+                'boundary_until': 0.0,
             }
             buttons_state_lock = threading.Lock()
             buttons_state = [0 for _ in LED_PINS]
@@ -338,6 +339,11 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             def apply_idle_leds(button_state: list[int]) -> None:
                 with led_cond:
                     boundary = str(led_state.get('boundary') or '')
+                    boundary_until = float(led_state.get('boundary_until') or 0.0)
+                    if boundary in {'max', 'min'} and time.monotonic() >= boundary_until:
+                        led_state['boundary'] = None
+                        led_state['boundary_until'] = 0.0
+                        boundary = ''
                 if boundary in {'max', 'min'}:
                     apply_boundary_leds(boundary)
                     return
@@ -423,13 +429,18 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
             def set_led_volume_boundary(mode: str) -> None:
                 boundary = 'max' if mode == 'max' else 'min'
+                step_ms = store.get_setting('rotary_led_step_ms', 25)
+                hold_ms = max(120, min(800, int(step_ms) * 6))
+                hold_until = time.monotonic() + (hold_ms / 1000.0)
                 with led_cond:
-                    if str(led_state.get('boundary') or '') == boundary:
-                        return
+                    current_boundary = str(led_state.get('boundary') or '')
+                    had_sweeps = int(led_state.get('sweeps_pending', 0)) > 0 or bool(led_state.get('direction'))
                     led_state['boundary'] = boundary
-                    led_state['direction'] = None
-                    led_state['sweeps_pending'] = 0
-                    led_state['seq'] = int(led_state.get('seq', 0)) + 1
+                    led_state['boundary_until'] = hold_until
+                    if had_sweeps or current_boundary != boundary:
+                        led_state['direction'] = None
+                        led_state['sweeps_pending'] = 0
+                        led_state['seq'] = int(led_state.get('seq', 0)) + 1
                     led_cond.notify()
 
             def clear_led_volume_boundary() -> None:
@@ -437,6 +448,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     if led_state.get('boundary') is None:
                         return
                     led_state['boundary'] = None
+                    led_state['boundary_until'] = 0.0
                     led_state['seq'] = int(led_state.get('seq', 0)) + 1
                     led_cond.notify()
 

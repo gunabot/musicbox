@@ -153,6 +153,23 @@
     return date.toLocaleString();
   }
 
+  function formatElapsedSeconds(seconds) {
+    if (seconds == null || Number.isNaN(Number(seconds))) {
+      return '-';
+    }
+    const total = Math.max(0, Math.floor(Number(seconds)));
+    const hours = Math.floor(total / 3600);
+    const mins = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    if (hours > 0) {
+      return `${hours}h ${mins}m`;
+    }
+    if (mins > 0) {
+      return `${mins}m ${secs}s`;
+    }
+    return `${secs}s`;
+  }
+
   function loadUiPrefs() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -1714,11 +1731,28 @@
     if (!tbody) {
       return;
     }
+    const summary = $('spotify-jobs-summary');
     if (hasActiveSelectionInElement(tbody) || isTextSelectionActive()) {
       return;
     }
     tbody.textContent = '';
     const jobs = Array.isArray(state.spotifyJobs) ? state.spotifyJobs : [];
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    if (summary) {
+      const runningJobs = jobs.filter((job) => String(job.status || '').toLowerCase() === 'running');
+      const queuedJobs = jobs.filter((job) => String(job.status || '').toLowerCase() === 'queued');
+      if (runningJobs.length > 0) {
+        const startedAt = Number(runningJobs[0].created_at || 0) || nowEpoch;
+        const elapsed = formatElapsedSeconds(nowEpoch - startedAt);
+        summary.textContent = `Running ${runningJobs.length} job(s), queued ${queuedJobs.length}, active for ${elapsed}.`;
+      } else if (queuedJobs.length > 0) {
+        summary.textContent = `Queued ${queuedJobs.length} job(s), waiting to start.`;
+      } else if (jobs.length > 0) {
+        summary.textContent = 'No active cache jobs.';
+      } else {
+        summary.textContent = 'No cache jobs yet.';
+      }
+    }
     if (!jobs.length) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
@@ -1737,7 +1771,13 @@
       const pill = document.createElement('span');
       const status = String(job.status || 'queued').toLowerCase();
       pill.className = `spotify-job-status ${status}`;
-      pill.textContent = status;
+      if (status === 'running') {
+        const startedAt = Number(job.created_at || 0) || nowEpoch;
+        const elapsed = formatElapsedSeconds(nowEpoch - startedAt);
+        pill.textContent = `running ${elapsed}`;
+      } else {
+        pill.textContent = status;
+      }
       statusTd.appendChild(pill);
       tr.appendChild(statusTd);
 
