@@ -2,7 +2,6 @@ import os
 import subprocess
 import threading
 import time
-import math
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -38,9 +37,7 @@ from .config import (
     HEALTH_AUDIO_SCAN_INTERVAL_S,
     HEALTH_METRICS_INTERVAL_S,
     INPUT_LOOP_INTERVAL_S,
-    LED_BREATHE_STEPS,
     LED_PINS,
-    LED_PWM_FREQ_HZ,
     LOW_BATTERY_PERCENT,
     MEDIA_DIR,
     PLAYER_BUTTON_HOLD_SECONDS,
@@ -69,8 +66,6 @@ _REG_CALIBRATION = 0x05
 _CALIBRATION_VALUE = 4096
 # Number of detent events we observe for one 360-degree encoder turn.
 _ROTARY_STEPS_PER_TURN = 24.0
-# On this seesaw breakout, LED pin 1 latches on after PWM use. Keep it digital.
-_PWM_DISABLED_LED_PINS = {1}
 
 
 def _detect_audio_device() -> Optional[str]:
@@ -267,24 +262,12 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             i2c = busio.I2C(board.SCL, board.SDA)
             seesaw = Seesaw(i2c, addr=SEESAW_ADDR)
             seesaw_lock = threading.Lock()
-            led_supports_pwm: Dict[int, bool] = {}
             with seesaw_lock:
                 for pin in BUTTON_PINS:
                     seesaw.pin_mode(pin, seesaw.INPUT_PULLUP)
                 for pin in LED_PINS:
                     seesaw.pin_mode(pin, seesaw.OUTPUT)
-                    if pin in _PWM_DISABLED_LED_PINS:
-                        seesaw.digital_write(pin, False)
-                        led_supports_pwm[pin] = False
-                        continue
-                    try:
-                        seesaw.set_pwm_freq(pin, LED_PWM_FREQ_HZ)
-                        seesaw.analog_write(pin, 0, delay=0)
-                        seesaw.digital_write(pin, False)
-                        led_supports_pwm[pin] = True
-                    except Exception:
-                        seesaw.digital_write(pin, False)
-                        led_supports_pwm[pin] = False
+                    seesaw.digital_write(pin, False)
 
             store.update_health(seesaw=True)
             store.add_event('input monitor started')
@@ -350,20 +333,8 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             buttons_state_lock = threading.Lock()
             buttons_state = [0 for _ in LED_PINS]
 
-            def clamp_led_level(value: float) -> int:
-                return max(0, min(65535, int(round(float(value)))))
-
             def write_led_level_unlocked(pin: int, level: int) -> None:
-                clamped = clamp_led_level(level)
-                if clamped <= 0:
-                    if led_supports_pwm.get(pin, False):
-                        seesaw.analog_write(pin, 0, delay=0)
-                        seesaw.pin_mode(pin, seesaw.OUTPUT)
-                    seesaw.digital_write(pin, False)
-                elif led_supports_pwm.get(pin, False):
-                    seesaw.analog_write(pin, clamped, delay=0)
-                else:
-                    seesaw.digital_write(pin, True)
+                seesaw.digital_write(pin, bool(level))
 
             def set_led_level(pin: int, level: int) -> None:
                 with seesaw_lock:
@@ -437,34 +408,24 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     remaining -= chunk
                 return not led_stop.is_set()
 
-            def pulse_all_leds(*, on_s: float, off_s: float = 0.0, repeat: int = 1) -> bool:
+            def pulse_leds(led_pins: list[int], *, on_s: float, off_s: float = 0.0, repeat: int = 1) -> bool:
+                active_leds = set(led_pins)
                 for _ in range(max(1, int(repeat))):
-                    if not breathe_leds(list(LED_PINS), duration_s=on_s):
+                    apply_led_pattern(active_leds)
+                    if not wait_led_step(on_s):
                         return False
+                    apply_led_levels({})
                     if off_s > 0.0 and not wait_led_step(off_s):
                         return False
                 return not led_stop.is_set()
 
+            def pulse_all_leds(*, on_s: float, off_s: float = 0.0, repeat: int = 1) -> bool:
+                return pulse_leds(list(LED_PINS), on_s=on_s, off_s=off_s, repeat=repeat)
+
             def chase_leds(order: list[int], *, step_s: float) -> bool:
                 for led_pin in order:
-                    if not breathe_leds([led_pin], duration_s=step_s):
+                    if not pulse_leds([led_pin], on_s=step_s):
                         return False
-                return not led_stop.is_set()
-
-            def breathe_leds(led_pins: list[int], *, duration_s: float) -> bool:
-                steps = max(2, int(LED_BREATHE_STEPS))
-                step_s = max(0.01, float(duration_s) / max(1, steps - 1))
-                active = list(dict.fromkeys(led_pins))
-                if not active:
-                    return True
-                for step in range(steps):
-                    phase = step / max(1, steps - 1)
-                    curve = math.sin(math.pi * phase)
-                    level = clamp_led_level((curve * curve) * 65535.0)
-                    apply_led_levels({led_pin: level for led_pin in active})
-                    if not wait_led_step(step_s):
-                        return False
-                apply_led_levels({})
                 return not led_stop.is_set()
 
             def run_status_animation(animation: Callable[[], bool]) -> bool:
@@ -686,7 +647,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                                 red_led = LED_PINS[max(0, min(len(LED_PINS) - 1, STATUS_LED_RED_INDEX - 1))]
 
                                 def low_battery_animation() -> bool:
-                                    return breathe_leds([red_led], duration_s=BATTERY_STATUS_PULSE_S)
+                                    return pulse_leds([red_led], on_s=BATTERY_STATUS_PULSE_S)
 
                                 if run_status_animation(low_battery_animation):
                                     store.add_event('LED_BATTERY_LOW_PULSE')
@@ -700,7 +661,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                                 green_led = LED_PINS[max(0, min(len(LED_PINS) - 1, STATUS_LED_GREEN_INDEX - 1))]
 
                                 def full_battery_animation() -> bool:
-                                    return breathe_leds([green_led], duration_s=BATTERY_STATUS_PULSE_S)
+                                    return pulse_leds([green_led], on_s=BATTERY_STATUS_PULSE_S)
 
                                 if run_status_animation(full_battery_animation):
                                     store.add_event('LED_BATTERY_FULL_PULSE')

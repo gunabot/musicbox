@@ -95,7 +95,5 @@ STARTUP_LED_FLASH_ON_S = max(0.12, float(os.environ.get('MUSICBOX_STARTUP_LED_FL
 STARTUP_LED_FLASH_OFF_S = max(0.05, float(os.environ.get('MUSICBOX_STARTUP_LED_FLASH_OFF_S', '0.18')))
 STARTUP_LED_SWEEP_STEP_S = max(0.08, float(os.environ.get('MUSICBOX_STARTUP_LED_SWEEP_STEP_S', '0.24')))
 STARTUP_LED_READY_DELAY_S = max(0.0, float(os.environ.get('MUSICBOX_STARTUP_LED_READY_DELAY_S', '0.35')))
-LED_PWM_FREQ_HZ = max(100, min(4000, int(os.environ.get('MUSICBOX_LED_PWM_FREQ_HZ', '1200'))))
-LED_BREATHE_STEPS = max(16, min(128, int(os.environ.get('MUSICBOX_LED_BREATHE_STEPS', '28'))))
 
 MEDIA_EXTENSIONS = {'.mp3', '.wav'}
