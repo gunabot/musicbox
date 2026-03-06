@@ -89,11 +89,13 @@ BATTERY_FULL_PERCENT = max(90.0, min(100.0, float(os.environ.get('MUSICBOX_BATTE
 BATTERY_STATUS_INTERVAL_S = max(15.0, float(os.environ.get('MUSICBOX_BATTERY_STATUS_INTERVAL_S', '60.0')))
 BATTERY_STATUS_PULSE_S = max(0.2, float(os.environ.get('MUSICBOX_BATTERY_STATUS_PULSE_S', '1.0')))
 STATUS_LED_RED_INDEX = max(1, min(4, int(os.environ.get('MUSICBOX_STATUS_LED_RED_INDEX', '2'))))
-STATUS_LED_GREEN_INDEX = max(1, min(4, int(os.environ.get('MUSICBOX_STATUS_LED_GREEN_INDEX', '1'))))
+STATUS_LED_GREEN_INDEX = max(1, min(4, int(os.environ.get('MUSICBOX_STATUS_LED_GREEN_INDEX', '4'))))
 STARTUP_LED_FLASH_COUNT = max(1, min(4, int(os.environ.get('MUSICBOX_STARTUP_LED_FLASH_COUNT', '2'))))
-STARTUP_LED_FLASH_ON_S = max(0.08, float(os.environ.get('MUSICBOX_STARTUP_LED_FLASH_ON_S', '0.22')))
-STARTUP_LED_FLASH_OFF_S = max(0.05, float(os.environ.get('MUSICBOX_STARTUP_LED_FLASH_OFF_S', '0.16')))
-STARTUP_LED_SWEEP_STEP_S = max(0.05, float(os.environ.get('MUSICBOX_STARTUP_LED_SWEEP_STEP_S', '0.14')))
+STARTUP_LED_FLASH_ON_S = max(0.12, float(os.environ.get('MUSICBOX_STARTUP_LED_FLASH_ON_S', '0.45')))
+STARTUP_LED_FLASH_OFF_S = max(0.05, float(os.environ.get('MUSICBOX_STARTUP_LED_FLASH_OFF_S', '0.18')))
+STARTUP_LED_SWEEP_STEP_S = max(0.08, float(os.environ.get('MUSICBOX_STARTUP_LED_SWEEP_STEP_S', '0.24')))
 STARTUP_LED_READY_DELAY_S = max(0.0, float(os.environ.get('MUSICBOX_STARTUP_LED_READY_DELAY_S', '0.35')))
+LED_PWM_FREQ_HZ = max(100, min(4000, int(os.environ.get('MUSICBOX_LED_PWM_FREQ_HZ', '1200'))))
+LED_BREATHE_STEPS = max(16, min(128, int(os.environ.get('MUSICBOX_LED_BREATHE_STEPS', '28'))))
 
 MEDIA_EXTENSIONS = {'.mp3', '.wav'}
