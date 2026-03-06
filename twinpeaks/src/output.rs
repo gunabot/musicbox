@@ -60,24 +60,23 @@ fn audio_callback(data: &mut [f32], buffer: &PcmBuffer, playback: &PlaybackState
     let decode_done = buffer.is_decode_complete();
     let written_frames = buffer.frames_written();
     let volume = playback.volume.load();
-    let direction_sign = playback.direction_sign();
 
     let original_cursor = playback.cursor.load();
     let mut cursor = original_cursor;
-    let mut speed = playback.speed.load();
-    let target_speed = playback.target_speed.load();
-    let speed_delta = playback.speed_delta.load();
+    let mut rate = playback.rate.load();
+    let target_rate = playback.target_rate.load();
+    let rate_delta = playback.rate_delta.load();
     let speed_gen = playback.speed_gen();
     let mut written_samples = 0usize;
 
     for frame in data.chunks_exact_mut(channels) {
         // Per-sample speed ramping
-        if speed_delta != 0.0 && speed != target_speed {
-            speed += speed_delta;
-            if (speed_delta > 0.0 && speed > target_speed)
-                || (speed_delta < 0.0 && speed < target_speed)
+        if rate_delta != 0.0 && rate != target_rate {
+            rate += rate_delta;
+            if (rate_delta > 0.0 && rate > target_rate)
+                || (rate_delta < 0.0 && rate < target_rate)
             {
-                speed = target_speed;
+                rate = target_rate;
             }
         }
 
@@ -109,7 +108,7 @@ fn audio_callback(data: &mut [f32], buffer: &PcmBuffer, playback: &PlaybackState
         }
 
         written_samples += channels;
-        cursor += speed * direction_sign;
+        cursor += rate;
     }
 
     if written_samples < data.len() {
@@ -121,10 +120,10 @@ fn audio_callback(data: &mut [f32], buffer: &PcmBuffer, playback: &PlaybackState
 
     // Generation-guarded speed writeback: only update if no set_speed occurred
     // during this callback. If delta was 0, the main thread owns the speed atomic.
-    if speed_delta != 0.0 && playback.speed_gen() == speed_gen {
-        playback.speed.store(speed);
-        if speed == target_speed {
-            playback.speed_delta.store(0.0);
+    if rate_delta != 0.0 && playback.speed_gen() == speed_gen {
+        playback.rate.store(rate);
+        if rate == target_rate {
+            playback.rate_delta.store(0.0);
         }
     }
 }
@@ -157,9 +156,9 @@ mod tests {
         let playback = PlaybackState::new();
         playback.volume.store(1.0);
         playback.cursor.store(0.0);
-        playback.speed.store(1.0);
-        playback.target_speed.store(1.0);
-        playback.speed_delta.store(0.0);
+        playback.rate.store(1.0);
+        playback.target_rate.store(1.0);
+        playback.rate_delta.store(0.0);
         playback.set_state(State::Playing);
 
         let mut out = vec![9.0f32; 4];

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from musicbox_app import create_app
 
-app = create_app()
+app = create_app(start_runtime=True)
 
 
 if __name__ == '__main__':

@@ -406,7 +406,9 @@
     setText('health-seesaw', badgeBool(Boolean(health.seesaw)));
     setText('health-rfid', health.rfid_device || 'not found');
     setText('health-audio', health.audio_device || 'not detected');
-    setText('health-mpv', badgeBool(Boolean(health.mpv_running)));
+    const backendName = String(health.player_backend || 'player');
+    const backendRunning = badgeBool(Boolean(health.player_backend_running));
+    setText('health-player-backend', `${backendName} / ${backendRunning}`);
 
     setText('health-ups', health.ups_connected ? 'connected' : 'not detected');
     setText('health-battery', health.battery_percent == null ? '-' : `${Number(health.battery_percent).toFixed(1)}%`);

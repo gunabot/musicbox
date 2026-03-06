@@ -77,10 +77,9 @@ impl Engine {
 
         // Reset playback state
         self.playback.cursor.store(0.0);
-        self.playback.speed.store(1.0);
-        self.playback.target_speed.store(1.0);
-        self.playback.speed_delta.store(0.0);
-        self.playback.set_direction(Direction::Forward);
+        self.playback.rate.store(1.0);
+        self.playback.target_rate.store(1.0);
+        self.playback.rate_delta.store(0.0);
         self.playback.set_state(State::Loading);
 
         // Create output stream BEFORE spawning decode — if this fails, nothing to clean up
@@ -147,27 +146,31 @@ impl Engine {
 
     pub fn set_speed(&self, speed: f64, direction: Option<Direction>, ramp_ms: u32) {
         let speed = speed.clamp(0.1, 10.0);
+        let current_rate = self.playback.rate.load();
+        let current_target = self.playback.target_rate.load();
+        let sign = match direction {
+            Some(Direction::Forward) => 1.0,
+            Some(Direction::Reverse) => -1.0,
+            None if current_rate < 0.0 || (current_rate == 0.0 && current_target < 0.0) => -1.0,
+            None => 1.0,
+        };
+        let target_rate = speed * sign;
 
-        if let Some(dir) = direction {
-            self.playback.set_direction(dir);
-        }
         self.playback.bump_speed_gen();
-        self.playback.target_speed.store(speed);
+        self.playback.target_rate.store(target_rate);
 
         if ramp_ms == 0 {
-            self.playback.speed.store(speed);
-            self.playback.speed_delta.store(0.0);
+            self.playback.rate.store(target_rate);
+            self.playback.rate_delta.store(0.0);
         } else if let Some(ref buffer) = self.buffer {
-            let current = self.playback.speed.load();
-            let ramp_frames = buffer.sample_rate as f64 * ramp_ms as f64 / 1000.0;
-            self.playback
-                .speed_delta
-                .store((speed - current) / ramp_frames);
+            let current = self.playback.rate.load();
+            let ramp_frames = (buffer.sample_rate as f64 * ramp_ms as f64 / 1000.0).max(1.0);
+            self.playback.rate_delta.store((target_rate - current) / ramp_frames);
         }
     }
 
     pub fn set_volume(&self, percent: u32) {
-        self.playback.volume.store(percent.min(100) as f32 / 100.0);
+        self.playback.volume.store(percent.min(200) as f32 / 100.0);
     }
 
     pub fn status(&self) -> StatusResponse {
@@ -190,7 +193,7 @@ impl Engine {
             position_sec,
             buffer_sec,
             duration_sec,
-            speed: self.playback.speed.load(),
+            speed: self.playback.speed(),
             direction: self.playback.direction(),
             volume: self.playback.volume_percent(),
         }
@@ -202,6 +205,9 @@ impl Engine {
         // and outputs silence, before we drop the stream and buffer.
         self.playback.set_state(State::Stopped);
         self.playback.cursor.store(0.0);
+        self.playback.rate.store(1.0);
+        self.playback.target_rate.store(1.0);
+        self.playback.rate_delta.store(0.0);
 
         if let Some((cancel, handle)) = self.decode.take() {
             cancel.store(true, Ordering::Release);

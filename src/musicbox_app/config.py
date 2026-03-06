@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
 BASE_DIR = Path(os.environ.get('MUSICBOX_BASE_DIR', '/home/musicbox/musicbox')).resolve()
 MEDIA_DIR = Path(os.environ.get('MUSICBOX_MEDIA_DIR', '/home/musicbox/media')).resolve()
 CONFIG_DIR = Path(os.environ.get('MUSICBOX_CONFIG_DIR', str(BASE_DIR / 'config'))).resolve()
@@ -37,9 +38,24 @@ SPOTIFY_SCOPE = (
 MAPPINGS_PATH = CONFIG_DIR / 'card_mappings.json'
 SETTINGS_PATH = CONFIG_DIR / 'settings.json'
 
-MPV_SOCKET = '/tmp/musicbox-mpv.sock'
-PLAYLIST_PATH = Path('/tmp/musicbox-playlist.m3u')
 AUDIO_DEVICE = 'alsa/plughw:1,0'
+TWINPEAKS_SOCKET = os.environ.get('MUSICBOX_TWINPEAKS_SOCKET', '/tmp/twinpeaks.sock').strip() or '/tmp/twinpeaks.sock'
+TWINPEAKS_BINARY = os.environ.get('MUSICBOX_TWINPEAKS_BIN', '').strip()
+TWINPEAKS_BINARY_CANDIDATES = tuple(
+    dict.fromkeys(
+        str(path)
+        for path in [
+            TWINPEAKS_BINARY,
+            BASE_DIR / 'twinpeaks' / 'target' / 'release' / 'twinpeaks',
+            REPO_ROOT / 'twinpeaks' / 'target' / 'release' / 'twinpeaks',
+            BASE_DIR / 'twinpeaks' / 'target' / 'debug' / 'twinpeaks',
+            REPO_ROOT / 'twinpeaks' / 'target' / 'debug' / 'twinpeaks',
+        ]
+        if str(path).strip()
+    )
+)
+TWINPEAKS_STARTUP_TIMEOUT_S = max(1.0, float(os.environ.get('MUSICBOX_TWINPEAKS_STARTUP_TIMEOUT_S', '5.0')))
+SPOTIFY_FETCH_TIMEOUT_S = max(60, int(os.environ.get('MUSICBOX_SPOTIFY_FETCH_TIMEOUT_S', '900')))
 
 SEESAW_ADDR = 0x3A
 UPS_ADDR = 0x42
@@ -60,4 +76,12 @@ DEFAULT_SETTINGS = {
 }
 EVENTS_MAX = 400
 
-MEDIA_EXTENSIONS = {'.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac'}
+INPUT_LOOP_INTERVAL_S = max(0.002, float(os.environ.get('MUSICBOX_INPUT_LOOP_INTERVAL_S', '0.01')))
+HEALTH_METRICS_INTERVAL_S = max(2.0, float(os.environ.get('MUSICBOX_HEALTH_METRICS_INTERVAL_S', '5.0')))
+HEALTH_AUDIO_SCAN_INTERVAL_S = max(5.0, float(os.environ.get('MUSICBOX_HEALTH_AUDIO_SCAN_INTERVAL_S', '30.0')))
+PLAYER_BUTTON_HOLD_SECONDS = max(0.1, float(os.environ.get('MUSICBOX_PLAYER_BUTTON_HOLD_SECONDS', '0.4')))
+PLAYER_TRANSPORT_TARGET_SPEED = max(1.0, float(os.environ.get('MUSICBOX_PLAYER_TRANSPORT_TARGET_SPEED', '1.5')))
+PLAYER_TRANSPORT_RAMP_MS = max(0, int(os.environ.get('MUSICBOX_PLAYER_TRANSPORT_RAMP_MS', '2000')))
+PLAYER_TRANSPORT_RETURN_MS = max(0, int(os.environ.get('MUSICBOX_PLAYER_TRANSPORT_RETURN_MS', '700')))
+
+MEDIA_EXTENSIONS = {'.mp3', '.wav'}

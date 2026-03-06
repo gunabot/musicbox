@@ -1,5 +1,6 @@
 import json
 import shutil
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict
@@ -32,6 +33,32 @@ from .spotify_jobs import SpotifyCacheJobManager
 from .store import AppStore
 
 
+class MusicboxRuntime:
+    def __init__(
+        self,
+        *,
+        store: AppStore,
+        spotify_auth: SpotifyAuthManager,
+        player: PlayerManager,
+        spotify_jobs: SpotifyCacheJobManager,
+    ) -> None:
+        self.store = store
+        self.spotify_auth = spotify_auth
+        self.player = player
+        self.spotify_jobs = spotify_jobs
+        self._lock = threading.RLock()
+        self._started = False
+
+    def start(self) -> None:
+        with self._lock:
+            if self._started:
+                return
+            self.spotify_jobs.start()
+            start_background_monitors(self.store, self.player)
+            self.store.add_event('musicbox service started')
+            self._started = True
+
+
 def _json_error(message: str, status_code: int = 400):
     return jsonify({'ok': False, 'error': message}), status_code
 
@@ -60,7 +87,7 @@ def _int_param(value: Any, default: int) -> int:
         return default
 
 
-def create_app() -> Flask:
+def create_app(*, start_runtime: bool = False) -> Flask:
     ensure_media_root()
 
     app = Flask(__name__, template_folder='templates', static_folder='static')
@@ -68,8 +95,15 @@ def create_app() -> Flask:
     spotify_auth = SpotifyAuthManager(store)
     player = PlayerManager(store, spotify_auth)
     spotify_jobs = SpotifyCacheJobManager(store, player.spotify_cache)
-    start_background_monitors(store, player)
-    store.add_event('musicbox service started')
+    runtime = MusicboxRuntime(
+        store=store,
+        spotify_auth=spotify_auth,
+        player=player,
+        spotify_jobs=spotify_jobs,
+    )
+    app.extensions['musicbox_runtime'] = runtime
+    if start_runtime:
+        runtime.start()
 
     @app.get('/')
     def index():

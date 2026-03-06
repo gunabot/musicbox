@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{
-    AtomicBool, AtomicI8, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+    AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering,
 };
 
 // --- Atomic wrappers for f64/f32 (bit-punned through integer atomics) ---
@@ -210,11 +210,10 @@ impl PcmBuffer {
 
 pub struct PlaybackState {
     pub cursor: AtomicF64,
-    pub speed: AtomicF64,
-    pub target_speed: AtomicF64,
-    pub speed_delta: AtomicF64,
+    pub rate: AtomicF64,
+    pub target_rate: AtomicF64,
+    pub rate_delta: AtomicF64,
     pub volume: AtomicF32,
-    direction: AtomicI8,
     state: AtomicU8,
     speed_gen: AtomicU32,
 }
@@ -223,11 +222,10 @@ impl PlaybackState {
     pub fn new() -> Self {
         Self {
             cursor: AtomicF64::new(0.0),
-            speed: AtomicF64::new(1.0),
-            target_speed: AtomicF64::new(1.0),
-            speed_delta: AtomicF64::new(0.0),
+            rate: AtomicF64::new(1.0),
+            target_rate: AtomicF64::new(1.0),
+            rate_delta: AtomicF64::new(0.0),
             volume: AtomicF32::new(0.75),
-            direction: AtomicI8::new(1),
             state: AtomicU8::new(State::Stopped as u8),
             speed_gen: AtomicU32::new(0),
         }
@@ -242,29 +240,24 @@ impl PlaybackState {
     }
 
     pub fn direction(&self) -> Direction {
-        if self.direction.load(Ordering::Relaxed) < 0 {
+        let rate = self.rate.load();
+        if rate < 0.0 {
+            Direction::Reverse
+        } else if rate > 0.0 {
+            Direction::Forward
+        } else if self.target_rate.load() < 0.0 {
             Direction::Reverse
         } else {
             Direction::Forward
         }
     }
 
-    pub fn set_direction(&self, d: Direction) {
-        self.direction.store(
-            match d {
-                Direction::Forward => 1,
-                Direction::Reverse => -1,
-            },
-            Ordering::Relaxed,
-        );
-    }
-
-    pub fn direction_sign(&self) -> f64 {
-        self.direction.load(Ordering::Relaxed) as f64
+    pub fn speed(&self) -> f64 {
+        self.rate.load().abs()
     }
 
     pub fn volume_percent(&self) -> u32 {
-        (self.volume.load() * 100.0).round() as u32
+        (self.volume.load() * 100.0).round().clamp(0.0, 200.0) as u32
     }
 
     pub fn speed_gen(&self) -> u32 {

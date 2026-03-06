@@ -31,8 +31,12 @@ except Exception:  # pragma: no cover - optional runtime dependency
 from .config import (
     AUDIO_DEVICE,
     BUTTON_PINS,
+    HEALTH_AUDIO_SCAN_INTERVAL_S,
+    HEALTH_METRICS_INTERVAL_S,
+    INPUT_LOOP_INTERVAL_S,
     LED_PINS,
     MEDIA_DIR,
+    PLAYER_BUTTON_HOLD_SECONDS,
     RFID_NAME_HINTS,
     ROT_CLK,
     ROT_DT,
@@ -443,9 +447,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                 volume_value: float | None = None
                 try:
-                    snap = store.snapshot(since_id=0, event_limit=1)
-                    player_state = snap.get('player') if isinstance(snap.get('player'), dict) else {}
-                    volume_value = float(player_state.get('volume'))
+                    volume_value = float(store.get_player_value('volume'))
                 except Exception:
                     volume_value = None
 
@@ -491,7 +493,33 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
             set_buttons_state(last_buttons)
             last_sw = sw_state_cache
             last_state = rotary_state_cache
+            store.set_buttons(last_buttons)
+            store.set_rotary(sw=1 if last_sw == 0 else 0)
+            reported_buttons = list(last_buttons)
+            reported_rotary_sw = 1 if last_sw == 0 else 0
             accum = 0
+            button_pressed_at: Dict[int, float] = {}
+            transport_button_idx: int | None = None
+
+            def maybe_begin_transport(idx: int, now_mono: float) -> None:
+                nonlocal transport_button_idx
+                if idx not in {3, 4} or transport_button_idx is not None:
+                    return
+                pressed_at = button_pressed_at.get(idx)
+                if pressed_at is None or now_mono - pressed_at < PLAYER_BUTTON_HOLD_SECONDS:
+                    return
+                if player.begin_transport(reverse=(idx == 3)):
+                    transport_button_idx = idx
+
+            def release_transport(idx: int) -> bool:
+                nonlocal transport_button_idx
+                if transport_button_idx != idx:
+                    button_pressed_at.pop(idx, None)
+                    return False
+                player.end_transport()
+                transport_button_idx = None
+                button_pressed_at.pop(idx, None)
+                return True
 
             def status_led_worker() -> None:
                 try:
@@ -504,9 +532,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 while not led_stop.is_set():
                     low_battery = False
                     try:
-                        snap = store.snapshot(since_id=0, event_limit=1)
-                        health = snap.get('health') if isinstance(snap.get('health'), dict) else {}
-                        pct = health.get('battery_percent')
+                        pct = store.get_health_value('battery_percent')
                         low_battery = pct is not None and float(pct) <= 10.0
                     except Exception:
                         low_battery = False
@@ -532,6 +558,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
             while True:
                 buttons = read_buttons()
+                now_mono = time.monotonic()
                 for idx, (old, new) in enumerate(zip(last_buttons, buttons), start=1):
                     if old == new:
                         continue
@@ -546,16 +573,23 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                         elif idx == 2:
                             player.stop()
                             store.add_event('STOP')
-                        elif idx == 3:
-                            player.prev()
-                        elif idx == 4:
-                            player.next()
+                        elif idx in {3, 4}:
+                            button_pressed_at[idx] = now_mono
+                    elif idx in {3, 4}:
+                        was_transport = release_transport(idx)
+                        if not was_transport:
+                            if idx == 3:
+                                player.prev()
+                            else:
+                                player.next()
 
                 last_buttons = buttons
                 set_buttons_state(last_buttons)
+                maybe_begin_transport(3, now_mono)
+                maybe_begin_transport(4, now_mono)
 
                 try:
-                    has_edges = rotary_request.wait_edge_events(timeout=0.0)
+                    has_edges = rotary_request.wait_edge_events(timeout=INPUT_LOOP_INTERVAL_S)
                     edge_events = rotary_request.read_edge_events(max_events=256) if has_edges else []
                 except Exception as exc:
                     raise RuntimeError(f'libgpiod edge read failed: {exc}') from exc
@@ -606,9 +640,14 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                             store.add_event(f"ROTARY_SW {'PRESSED' if sw_state_cache == 0 else 'RELEASED'}")
                             last_sw = sw_state_cache
 
-                store.set_buttons(buttons)
-                store.set_rotary(sw=1 if last_sw == 0 else 0)
-                time.sleep(0.0005)
+                if buttons != reported_buttons:
+                    store.set_buttons(buttons)
+                    reported_buttons = list(buttons)
+
+                rotary_sw_pressed = 1 if last_sw == 0 else 0
+                if rotary_sw_pressed != reported_rotary_sw:
+                    store.set_rotary(sw=rotary_sw_pressed)
+                    reported_rotary_sw = rotary_sw_pressed
 
         except Exception as exc:
             led_stop.set()
@@ -703,12 +742,14 @@ def _rfid_worker(store: AppStore, player: PlayerManager) -> None:
 def _player_watchdog_worker(player: PlayerManager) -> None:
     while True:
         player.watchdog_tick()
-        time.sleep(0.5)
+        time.sleep(0.25)
 
 
 def _health_worker(store: AppStore) -> None:
     last_applied_pcm: int | None = None
     last_pcm_error: str | None = None
+    last_audio_scan_monotonic = 0.0
+    audio_device: str | None = None
 
     while True:
         target_pcm = store.get_setting('alsa_pcm_percent', 100)
@@ -723,11 +764,14 @@ def _health_worker(store: AppStore) -> None:
                 store.add_event(f'ALSA_PCM_ERR {err}', level='warning')
                 last_pcm_error = err
 
-        audio = _detect_audio_device()
+        now_mono = time.monotonic()
+        if audio_device is None or now_mono - last_audio_scan_monotonic >= HEALTH_AUDIO_SCAN_INTERVAL_S:
+            audio_device = _detect_audio_device()
+            last_audio_scan_monotonic = now_mono
         ups = _read_ups_metrics()
         system = _read_system_metrics()
-        store.update_health(audio_device=audio, **ups, **system)
-        time.sleep(5)
+        store.update_health(audio_device=audio_device, **ups, **system)
+        time.sleep(HEALTH_METRICS_INTERVAL_S)
 
 
 def start_background_monitors(store: AppStore, player: PlayerManager) -> None:

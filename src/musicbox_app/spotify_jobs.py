@@ -18,8 +18,14 @@ class SpotifyCacheJobManager:
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._order: List[str] = []
         self._queue: List[str] = []
-        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
-        self._worker.start()
+        self._worker: threading.Thread | None = None
+
+    def start(self) -> None:
+        with self._lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+            self._worker.start()
 
     def _now(self) -> int:
         return int(time.time())
@@ -57,6 +63,7 @@ class SpotifyCacheJobManager:
             return out
 
     def enqueue(self, target: str, *, refresh: bool = False) -> Dict[str, Any]:
+        self.start()
         uri = normalize_spotify_target(target)
         now = self._now()
         with self._lock:

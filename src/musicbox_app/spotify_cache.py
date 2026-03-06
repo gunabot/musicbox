@@ -13,6 +13,7 @@ from .config import (
     SPOTIFY_CACHE_FORMAT,
     SPOTIFY_CACHE_INDEX_PATH,
     SPOTIFY_FETCH_COMMAND,
+    SPOTIFY_FETCH_TIMEOUT_S,
     SPOTIFY_OAUTH_PATH,
 )
 from .mappings import normalize_spotify_target
@@ -107,18 +108,24 @@ class SpotifyCacheResolver:
 
             self.import_root.mkdir(parents=True, exist_ok=True)
             cmd = self._build_cmd(uri)
-            token_ctx = self.spotify_auth.get_access_context(force_refresh=True, min_ttl_seconds=300)
+            token_ctx = self.spotify_auth.get_access_context(force_refresh=False, min_ttl_seconds=300)
             access_token = str(token_ctx.get('access_token', '')).strip()
             expires_at = int(token_ctx.get('expires_at', 0) or 0)
             if not access_token:
                 raise RuntimeError('Spotify access token unavailable. Please reconnect Spotify.')
             self.store.add_event(f'SPOTIFY_CACHE_MISS {uri}')
-            proc = subprocess.run(
-                cmd,
-                text=True,
-                capture_output=True,
-                env=self._build_env(access_token=access_token, expires_at=expires_at),
-            )
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    text=True,
+                    capture_output=True,
+                    env=self._build_env(access_token=access_token, expires_at=expires_at),
+                    timeout=SPOTIFY_FETCH_TIMEOUT_S,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise RuntimeError(
+                    f'spotify fetch timed out after {SPOTIFY_FETCH_TIMEOUT_S}s for {uri}'
+                ) from exc
             if proc.returncode != 0:
                 stderr = (proc.stderr or '').strip()
                 raise RuntimeError(stderr or f'fetch command failed with code {proc.returncode}')

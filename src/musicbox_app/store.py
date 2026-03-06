@@ -38,13 +38,22 @@ class AppStore:
             'rotary_last': '-',
             'rotary_pos': 0,
             'last_card': None,
-            'player': {'status': 'stopped', 'source': 'local', 'file': None, 'spotify_uri': None, 'volume': 50},
+            'player': {
+                'status': 'stopped',
+                'source': 'local',
+                'file': None,
+                'spotify_uri': None,
+                'volume': 50,
+                'speed': 1.0,
+                'direction': 'forward',
+            },
             'settings': copy.deepcopy(self._settings),
             'health': {
                 'seesaw': False,
                 'rfid_device': None,
                 'audio_device': None,
-                'mpv_running': False,
+                'player_backend': 'twinpeaks',
+                'player_backend_running': False,
                 'ups_connected': False,
                 'battery_percent': None,
                 'battery_voltage': None,
@@ -121,9 +130,23 @@ class AppStore:
             current.update(payload)
             self.state['player'] = current
 
+    def get_player_value(self, key: str, default: Any = None) -> Any:
+        with self.lock:
+            player = self.state.get('player')
+            if not isinstance(player, dict):
+                return default
+            return player.get(key, default)
+
     def update_health(self, **kwargs: Any) -> None:
         with self.lock:
             self.state['health'].update(kwargs)
+
+    def get_health_value(self, key: str, default: Any = None) -> Any:
+        with self.lock:
+            health = self.state.get('health')
+            if not isinstance(health, dict):
+                return default
+            return health.get(key, default)
 
     def set_setting(self, key: str, value: int) -> None:
         with self.lock:
