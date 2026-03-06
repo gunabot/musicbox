@@ -352,6 +352,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 if clamped <= 0:
                     if led_supports_pwm.get(pin, False):
                         seesaw.analog_write(pin, 0, delay=0)
+                        seesaw.pin_mode(pin, seesaw.OUTPUT)
                     seesaw.digital_write(pin, False)
                 elif led_supports_pwm.get(pin, False):
                     seesaw.analog_write(pin, clamped, delay=0)
