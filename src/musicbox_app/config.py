@@ -38,7 +38,7 @@ SPOTIFY_SCOPE = (
 MAPPINGS_PATH = CONFIG_DIR / 'card_mappings.json'
 SETTINGS_PATH = CONFIG_DIR / 'settings.json'
 
-AUDIO_DEVICE = 'alsa/plughw:1,0'
+AUDIO_DEVICE = os.environ.get('MUSICBOX_AUDIO_DEVICE', 'alsa/plughw:1,0').strip() or 'alsa/plughw:1,0'
 TWINPEAKS_SOCKET = os.environ.get('MUSICBOX_TWINPEAKS_SOCKET', '/tmp/twinpeaks.sock').strip() or '/tmp/twinpeaks.sock'
 TWINPEAKS_BINARY = os.environ.get('MUSICBOX_TWINPEAKS_BIN', '').strip()
 TWINPEAKS_OUTPUT_HINT = os.environ.get('MUSICBOX_TWINPEAKS_OUTPUT_HINT', '').strip()
@@ -56,6 +56,11 @@ TWINPEAKS_BINARY_CANDIDATES = tuple(
     )
 )
 TWINPEAKS_STARTUP_TIMEOUT_S = max(1.0, float(os.environ.get('MUSICBOX_TWINPEAKS_STARTUP_TIMEOUT_S', '5.0')))
+TWINPEAKS_COMMAND_TIMEOUT_S = max(0.25, float(os.environ.get('MUSICBOX_TWINPEAKS_COMMAND_TIMEOUT_S', '0.75')))
+TWINPEAKS_LOAD_TIMEOUT_S = max(
+    TWINPEAKS_COMMAND_TIMEOUT_S,
+    float(os.environ.get('MUSICBOX_TWINPEAKS_LOAD_TIMEOUT_S', '12.0')),
+)
 SPOTIFY_FETCH_TIMEOUT_S = max(60, int(os.environ.get('MUSICBOX_SPOTIFY_FETCH_TIMEOUT_S', '900')))
 
 SEESAW_ADDR = 0x3A

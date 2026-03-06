@@ -266,10 +266,10 @@
           <input id="rotary-volume-per-turn" type="number" min="20" max="300" step="1" value="100" inputmode="numeric">
           <span class="muted">Default: 100. One full turn targets this volume change.</span>
         </div>
-        <label for="alsa-pcm-percent">Audio output gain (ALSA PCM %)</label>
+        <label for="alsa-pcm-percent">Audio output gain (%)</label>
         <div class="toolbar">
-          <input id="alsa-pcm-percent" type="number" min="40" max="100" step="1" value="100" inputmode="numeric">
-          <span class="muted">Default: 100. Hardware output level for the USB sound card.</span>
+          <input id="alsa-pcm-percent" type="number" min="0" max="100" step="1" value="100" inputmode="numeric">
+          <span class="muted">Default: 100. Hardware output level for the active audio device.</span>
         </div>
         <label for="player-volume-max">Player max software volume (%)</label>
         <div class="toolbar">

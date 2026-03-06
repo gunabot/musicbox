@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import threading
 import time
@@ -53,6 +54,7 @@ from .config import (
     STARTUP_LED_SWEEP_STEP_S,
     STATUS_LED_GREEN_INDEX,
     STATUS_LED_RED_INDEX,
+    TWINPEAKS_OUTPUT_HINT,
     UPS_ADDR,
 )
 from .player import PlayerManager
@@ -69,42 +71,108 @@ _ROTARY_STEPS_PER_TURN = 24.0
 
 
 def _detect_audio_device() -> Optional[str]:
+    cards = _list_alsa_cards()
+    for target in _configured_audio_targets():
+        target_lower = target.lower()
+        for _, name, line in cards:
+            if target_lower == name.lower() or target_lower in line.lower():
+                return line
+
+    for _, _, line in cards:
+        lower = line.lower()
+        if 'wm8960' in lower or 'jieli' in lower or 'usb audio' in lower:
+            return line
+
+    return cards[0][2] if cards else None
+
+
+def _list_alsa_cards() -> list[tuple[str, str, str]]:
     try:
         output = subprocess.check_output(['aplay', '-l'], text=True, stderr=subprocess.DEVNULL)
     except Exception:
-        return None
+        return []
 
-    for line in output.splitlines():
-        lower = line.lower()
-        if 'jieli' in lower or 'usb audio' in lower:
-            return line.strip()
-    return None
+    cards: list[tuple[str, str, str]] = []
+    pattern = re.compile(r'^card\s+(\d+):\s*([^\s\[]+)')
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        match = pattern.search(line)
+        if not match:
+            continue
+        cards.append((match.group(1), match.group(2).strip(), line))
+    return cards
+
+
+def _configured_audio_targets() -> list[str]:
+    values: list[str] = []
+    for raw in [
+        os.environ.get('MUSICBOX_AUDIO_DEVICE', '').strip(),
+        str(TWINPEAKS_OUTPUT_HINT or '').strip(),
+        str(AUDIO_DEVICE or '').strip(),
+    ]:
+        if raw.lower().startswith('alsa/'):
+            raw = raw.split('/', 1)[1].strip()
+        if raw and raw not in values:
+            values.append(raw)
+    return values
 
 
 def _audio_card_index() -> str:
-    value = str(AUDIO_DEVICE or '').strip().lower()
-    marker = 'plughw:'
-    if marker in value:
-        tail = value.split(marker, 1)[1]
-        card = tail.split(',', 1)[0].strip()
-        if card.isdigit():
-            return card
+    cards = _list_alsa_cards()
+    for target in _configured_audio_targets():
+        match = re.search(r'(?i)(?:plug)?hw:(\d+)(?:,|$)', target)
+        if match:
+            return match.group(1)
+
+        target_lower = target.lower()
+        if target_lower:
+            for index, name, line in cards:
+                if target_lower == name.lower() or target_lower in line.lower():
+                    return index
+
+    for index, _, line in cards:
+        if 'wm8960' in line.lower():
+            return index
+
+    if cards:
+        return cards[0][0]
     return '1'
 
 
 def _apply_alsa_pcm_percent(percent: int) -> tuple[bool, str]:
     card = _audio_card_index()
-    try:
-        subprocess.run(
-            ['amixer', '-c', card, 'sset', 'PCM', f'{int(percent)}%'],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
+    controls: list[str] = ['PCM']
+    errors: list[str] = []
+
+    def apply_control(name: str) -> bool:
+        try:
+            result = subprocess.run(
+                ['amixer', '-c', card, 'sset', name, f'{int(percent)}%'],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except Exception as exc:
+            errors.append(f'{name}: {exc}')
+            return False
+        if result.returncode == 0:
+            return True
+        detail = (result.stderr or '').strip() or f'exit {result.returncode}'
+        errors.append(f'{name}: {detail}')
+        return False
+
+    if apply_control('PCM'):
         return True, ''
-    except Exception as exc:
-        return False, str(exc)
+
+    controls = ['Speaker', 'Playback']
+    applied = False
+    for control in controls:
+        applied = apply_control(control) or applied
+
+    if applied:
+        return True, ''
+    return False, '; '.join(errors) if errors else 'no supported ALSA mixer control found'
 
 
 def _find_rfid_device() -> Optional[InputDevice]:
@@ -877,7 +945,7 @@ def _health_worker(store: AppStore) -> None:
 
     while True:
         target_pcm = store.get_setting('alsa_pcm_percent', 100)
-        target_pcm = max(40, min(100, int(target_pcm)))
+        target_pcm = max(0, min(100, int(target_pcm)))
         if target_pcm != last_applied_pcm:
             ok, err = _apply_alsa_pcm_percent(target_pcm)
             if ok:

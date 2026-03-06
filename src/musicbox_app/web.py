@@ -241,7 +241,7 @@ def create_app(*, start_runtime: bool = False) -> Flask:
                 changed = True
             if 'alsa_pcm_percent' in data:
                 value = int(data['alsa_pcm_percent'])
-                value = max(40, min(100, value))
+                value = max(0, min(100, value))
                 store.set_setting('alsa_pcm_percent', value)
                 store.add_event(f'SET alsa_pcm_percent={value}')
                 changed = True

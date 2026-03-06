@@ -1899,7 +1899,7 @@
     const ledSpeed = clampInt(ledInput.value, 5, 250, 25);
     const ledMaxPending = clampInt(ledPendingInput.value, 0, 12, 0);
     const volumePerTurn = clampInt(volumeInput.value, 20, 300, 100);
-    const alsaPcmPercent = clampInt(alsaInput.value, 40, 100, 100);
+    const alsaPcmPercent = clampInt(alsaInput.value, 0, 100, 100);
     const playerVolumeMax = clampInt(maxInput.value, 100, 200, 130);
     ledInput.value = String(ledSpeed);
     ledPendingInput.value = String(ledMaxPending);

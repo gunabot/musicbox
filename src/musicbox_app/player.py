@@ -17,6 +17,8 @@ from .config import (
     PLAYER_TRANSPORT_RETURN_MS,
     PLAYER_TRANSPORT_TARGET_SPEED,
     TWINPEAKS_BINARY_CANDIDATES,
+    TWINPEAKS_COMMAND_TIMEOUT_S,
+    TWINPEAKS_LOAD_TIMEOUT_S,
     TWINPEAKS_SOCKET,
     TWINPEAKS_STARTUP_TIMEOUT_S,
     TWINPEAKS_OUTPUT_HINT,
@@ -124,9 +126,9 @@ class TwinPeaksBackend:
                 return found.group(2).strip()
         return normalized
 
-    def _command(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _command(self, payload: dict[str, Any], *, timeout_s: float = TWINPEAKS_COMMAND_TIMEOUT_S) -> dict[str, Any]:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(0.75)
+        sock.settimeout(max(0.25, float(timeout_s)))
         try:
             sock.connect(self.socket_path)
             body = json.dumps(payload) + '\n'
@@ -217,7 +219,7 @@ class TwinPeaksBackend:
     def play_file(self, path: Path, *, volume: int) -> BackendStatus:
         self.ensure_running()
         self.set_volume(volume)
-        response = self._command({'cmd': 'load', 'path': str(path)})
+        response = self._command({'cmd': 'load', 'path': str(path)}, timeout_s=TWINPEAKS_LOAD_TIMEOUT_S)
         return self._expect_ok(response)
 
     def play(self) -> BackendStatus:
