@@ -2,37 +2,37 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleRate, Stream, StreamConfig};
+use cpal::{FromSample, Sample, SampleFormat, SizedSample, Stream, StreamConfig, SupportedStreamConfig};
 
 use crate::types::{PcmBuffer, PlaybackState, State};
 
 pub fn build_output_stream(buffer: Arc<PcmBuffer>, playback: Arc<PlaybackState>) -> Result<Stream> {
     let host = cpal::default_host();
     let device = select_output_device(&host)?;
-
-    log::info!("Output device: {}", device.name().unwrap_or_default());
-
+    let supported = device
+        .default_output_config()
+        .context("Failed to query output config")?;
     let config = StreamConfig {
-        channels: buffer.channels,
-        sample_rate: SampleRate(buffer.sample_rate),
+        channels: supported.channels(),
+        sample_rate: supported.sample_rate(),
         buffer_size: cpal::BufferSize::Default,
     };
+    let device_name = device.name().unwrap_or_default();
 
-    let stream = device
-        .build_output_stream(
-            &config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
-                audio_callback(data, &buffer, &playback);
-            },
-            |err| {
-                log::error!("Audio output error: {}", err);
-            },
-            None,
-        )
-        .context("Failed to build output stream")?;
+    log::info!(
+        "Output device: {} ({}Hz, {}ch, {:?})",
+        device_name,
+        supported.sample_rate().0,
+        supported.channels(),
+        supported.sample_format()
+    );
 
-    stream.play().context("Failed to start output stream")?;
-    Ok(stream)
+    match supported.sample_format() {
+        SampleFormat::F32 => build_stream::<f32>(&device, &config, &supported, buffer, playback),
+        SampleFormat::I16 => build_stream::<i16>(&device, &config, &supported, buffer, playback),
+        SampleFormat::U16 => build_stream::<u16>(&device, &config, &supported, buffer, playback),
+        other => anyhow::bail!("Unsupported output sample format: {:?}", other),
+    }
 }
 
 fn select_output_device(host: &cpal::Host) -> Result<cpal::Device> {
@@ -99,9 +99,52 @@ fn device_match_score(name: &str, hint_lower: &str) -> i32 {
     score
 }
 
+fn build_stream<T>(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    supported: &SupportedStreamConfig,
+    buffer: Arc<PcmBuffer>,
+    playback: Arc<PlaybackState>,
+) -> Result<Stream>
+where
+    T: SizedSample + FromSample<f32>,
+{
+    let output_sample_rate = supported.sample_rate().0;
+    let output_channels = supported.channels();
+    let stream = device
+        .build_output_stream(
+            config,
+            move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                audio_callback(data, &buffer, &playback, output_sample_rate, output_channels);
+            },
+            |err| {
+                log::error!("Audio output error: {}", err);
+            },
+            None,
+        )
+        .context("Failed to build output stream")?;
+
+    stream.play().context("Failed to start output stream")?;
+    Ok(stream)
+}
+
 /// The real-time audio callback. No allocations, no locks.
-fn audio_callback(data: &mut [f32], buffer: &PcmBuffer, playback: &PlaybackState) {
-    let channels = buffer.channels as usize;
+fn audio_callback<T>(
+    data: &mut [T],
+    buffer: &PcmBuffer,
+    playback: &PlaybackState,
+    output_sample_rate: u32,
+    output_channels: u16,
+) where
+    T: Sample + FromSample<f32>,
+{
+    let channels = output_channels as usize;
+    let source_channels = buffer.channels as usize;
+    let frame_step = if output_sample_rate == 0 {
+        1.0
+    } else {
+        buffer.sample_rate as f64 / output_sample_rate as f64
+    };
 
     // Auto-start: Loading → Playing once enough data is buffered
     let mut state = playback.state();
@@ -113,7 +156,7 @@ fn audio_callback(data: &mut [f32], buffer: &PcmBuffer, playback: &PlaybackState
         }
     }
     if state != State::Playing {
-        data.fill(0.0);
+        data.fill(T::from_sample(0.0));
         return;
     }
 
@@ -164,17 +207,24 @@ fn audio_callback(data: &mut [f32], buffer: &PcmBuffer, playback: &PlaybackState
         let next_idx = (frame_idx + 1).min(written_frames.saturating_sub(1));
 
         for (ch, sample) in frame.iter_mut().enumerate() {
-            let s0 = buffer.read_sample(frame_idx * channels + ch);
-            let s1 = buffer.read_sample(next_idx * channels + ch);
-            *sample = (s0 + (s1 - s0) * frac) * volume;
+            let value = interpolate_frame_sample(
+                buffer,
+                frame_idx,
+                next_idx,
+                source_channels,
+                ch,
+                channels,
+                frac,
+            ) * volume;
+            *sample = T::from_sample(value);
         }
 
         written_samples += channels;
-        cursor += rate;
+        cursor += rate * frame_step;
     }
 
     if written_samples < data.len() {
-        data[written_samples..].fill(0.0);
+        data[written_samples..].fill(T::from_sample(0.0));
     }
 
     // CAS cursor writeback: only update if no seek occurred during this callback.
@@ -190,12 +240,40 @@ fn audio_callback(data: &mut [f32], buffer: &PcmBuffer, playback: &PlaybackState
     }
 }
 
+fn interpolate_frame_sample(
+    buffer: &PcmBuffer,
+    frame_idx: usize,
+    next_idx: usize,
+    source_channels: usize,
+    output_channel: usize,
+    output_channels: usize,
+    frac: f32,
+) -> f32 {
+    if source_channels == 0 {
+        return 0.0;
+    }
+
+    if output_channels == 1 && source_channels > 1 {
+        let mut total = 0.0f32;
+        for source_channel in 0..source_channels {
+            let s0 = buffer.read_sample(frame_idx * source_channels + source_channel);
+            let s1 = buffer.read_sample(next_idx * source_channels + source_channel);
+            total += s0 + (s1 - s0) * frac;
+        }
+        return total / source_channels as f32;
+    }
+
+    let source_channel = output_channel.min(source_channels.saturating_sub(1));
+    let s0 = buffer.read_sample(frame_idx * source_channels + source_channel);
+    let s1 = buffer.read_sample(next_idx * source_channels + source_channel);
+    s0 + (s1 - s0) * frac
+}
+
 #[cfg(test)]
 mod tests {
     use super::audio_callback;
-    use crate::types::{PcmBuffer, PlaybackState, State};
-
     use super::device_match_score;
+    use crate::types::{PcmBuffer, PlaybackState, State};
 
     #[test]
     fn callback_outputs_silence_when_not_playing() {
@@ -206,7 +284,7 @@ mod tests {
         playback.set_state(State::Paused);
 
         let mut out = vec![0.5f32; 8];
-        audio_callback(&mut out, &buffer, &playback);
+        audio_callback(&mut out, &buffer, &playback, 8_000, 1);
 
         assert!(out.iter().all(|v| *v == 0.0));
     }
@@ -226,13 +304,34 @@ mod tests {
         playback.set_state(State::Playing);
 
         let mut out = vec![9.0f32; 4];
-        audio_callback(&mut out, &buffer, &playback);
+        audio_callback(&mut out, &buffer, &playback, 8_000, 1);
 
         assert!((out[0] - 0.0).abs() < 1e-6);
         assert!((out[1] - 1.0).abs() < 1e-6);
         assert!((out[2] - 0.0).abs() < 1e-6);
         assert!((out[3] - 0.0).abs() < 1e-6);
         assert_eq!(playback.state(), State::Stopped);
+    }
+
+    #[test]
+    fn callback_resamples_to_output_rate() {
+        let buffer = PcmBuffer::new(16, 8_000, 1);
+        assert!(buffer.push_samples(&[0.0, 1.0, 2.0, 3.0]));
+        buffer.mark_decode_complete();
+
+        let playback = PlaybackState::new();
+        playback.volume.store(1.0);
+        playback.cursor.store(0.0);
+        playback.rate.store(1.0);
+        playback.target_rate.store(1.0);
+        playback.rate_delta.store(0.0);
+        playback.set_state(State::Playing);
+
+        let mut out = vec![0.0f32; 4];
+        audio_callback(&mut out, &buffer, &playback, 4_000, 1);
+
+        assert!((out[0] - 0.0).abs() < 1e-6);
+        assert!((out[1] - 2.0).abs() < 1e-6);
     }
 
     #[test]
