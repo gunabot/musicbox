@@ -30,11 +30,15 @@ except Exception:  # pragma: no cover - optional runtime dependency
 
 from .config import (
     AUDIO_DEVICE,
+    BATTERY_FULL_PERCENT,
+    BATTERY_STATUS_INTERVAL_S,
+    BATTERY_STATUS_PULSE_S,
     BUTTON_PINS,
     HEALTH_AUDIO_SCAN_INTERVAL_S,
     HEALTH_METRICS_INTERVAL_S,
     INPUT_LOOP_INTERVAL_S,
     LED_PINS,
+    LOW_BATTERY_PERCENT,
     MEDIA_DIR,
     PLAYER_BUTTON_HOLD_SECONDS,
     RFID_NAME_HINTS,
@@ -42,6 +46,13 @@ from .config import (
     ROT_DT,
     ROT_SW,
     SEESAW_ADDR,
+    STARTUP_LED_FLASH_COUNT,
+    STARTUP_LED_FLASH_OFF_S,
+    STARTUP_LED_FLASH_ON_S,
+    STARTUP_LED_READY_DELAY_S,
+    STARTUP_LED_SWEEP_STEP_S,
+    STATUS_LED_GREEN_INDEX,
+    STATUS_LED_RED_INDEX,
     UPS_ADDR,
 )
 from .player import PlayerManager
@@ -320,6 +331,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 'sweeps_pending': 0,
                 'boundary': None,
                 'boundary_until': 0.0,
+                'override_active': False,
             }
             buttons_state_lock = threading.Lock()
             buttons_state = [0 for _ in LED_PINS]
@@ -336,8 +348,15 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     for led_pin in LED_PINS:
                         seesaw.digital_write(led_pin, on)
 
-            def apply_idle_leds(button_state: list[int]) -> None:
+            def apply_led_pattern(active_leds: set[int]) -> None:
+                with seesaw_lock:
+                    for led_pin in LED_PINS:
+                        seesaw.digital_write(led_pin, led_pin in active_leds)
+
+            def apply_idle_leds(button_state: list[int], *, force: bool = False) -> None:
                 with led_cond:
+                    if bool(led_state.get('override_active')) and not force:
+                        return
                     boundary = str(led_state.get('boundary') or '')
                     boundary_until = float(led_state.get('boundary_until') or 0.0)
                     if boundary in {'max', 'min'} and time.monotonic() >= boundary_until:
@@ -357,23 +376,62 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 with buttons_state_lock:
                     buttons_state[:] = list(new_state)
 
-            def flash_led_triplet(led_pin: int, on_s: float = 0.08, off_s: float = 0.08) -> None:
+            def begin_led_override() -> None:
                 with led_cond:
                     led_state['seq'] = int(led_state.get('seq', 0)) + 1
                     led_state['direction'] = None
                     led_state['sweeps_pending'] = 0
-                    led_cond.notify()
+                    led_state['override_active'] = True
+                    led_cond.notify_all()
 
-                for _ in range(3):
-                    if led_stop.is_set():
-                        return
-                    with seesaw_lock:
-                        seesaw.digital_write(led_pin, True)
-                    time.sleep(on_s)
-                    with seesaw_lock:
-                        seesaw.digital_write(led_pin, False)
-                    time.sleep(off_s)
-                apply_idle_leds(get_buttons_state())
+            def end_led_override() -> None:
+                with led_cond:
+                    led_state['override_active'] = False
+                    led_state['seq'] = int(led_state.get('seq', 0)) + 1
+                    led_cond.notify_all()
+                apply_idle_leds(get_buttons_state(), force=True)
+
+            def wait_led_step(duration_s: float) -> bool:
+                remaining = max(0.0, float(duration_s))
+                while remaining > 0.0 and not led_stop.is_set():
+                    chunk = min(0.02, remaining)
+                    time.sleep(chunk)
+                    remaining -= chunk
+                return not led_stop.is_set()
+
+            def pulse_led(led_pin: int, *, on_s: float, off_s: float = 0.0) -> bool:
+                apply_led_pattern({led_pin})
+                if not wait_led_step(on_s):
+                    return False
+                apply_led_pattern(set())
+                if off_s > 0.0:
+                    return wait_led_step(off_s)
+                return not led_stop.is_set()
+
+            def pulse_all_leds(*, on_s: float, off_s: float = 0.0, repeat: int = 1) -> bool:
+                for _ in range(max(1, int(repeat))):
+                    apply_led_pattern(set(LED_PINS))
+                    if not wait_led_step(on_s):
+                        return False
+                    apply_led_pattern(set())
+                    if off_s > 0.0 and not wait_led_step(off_s):
+                        return False
+                return not led_stop.is_set()
+
+            def chase_leds(order: list[int], *, step_s: float) -> bool:
+                for led_pin in order:
+                    apply_led_pattern({led_pin})
+                    if not wait_led_step(step_s):
+                        return False
+                apply_led_pattern(set())
+                return not led_stop.is_set()
+
+            def run_status_animation(animation: callable) -> bool:
+                begin_led_override()
+                try:
+                    return bool(animation())
+                finally:
+                    end_led_override()
 
             def rotary_led_sweep(direction: str, button_state: list[int], state_seq: int) -> None:
                 step_ms = store.get_setting('rotary_led_step_ms', 25)
@@ -480,6 +538,9 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     button_state = [0 for _ in LED_PINS]
                     state_seq = 0
                     with led_cond:
+                        if bool(led_state.get('override_active')):
+                            led_cond.wait(timeout=0.05)
+                            continue
                         button_state = list(led_state.get('button_state', [0 for _ in LED_PINS]))
                         pending = int(led_state.get('sweeps_pending', 0))
                         if pending <= 0:
@@ -535,33 +596,82 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
             def status_led_worker() -> None:
                 try:
-                    flash_led_triplet(LED_PINS[0], on_s=0.08, off_s=0.08)
-                    store.add_event('LED_READY_FLASH')
+                    if STARTUP_LED_READY_DELAY_S > 0.0:
+                        wait_led_step(STARTUP_LED_READY_DELAY_S)
+
+                    def startup_animation() -> bool:
+                        if not pulse_all_leds(
+                            on_s=STARTUP_LED_FLASH_ON_S,
+                            off_s=STARTUP_LED_FLASH_OFF_S,
+                            repeat=STARTUP_LED_FLASH_COUNT,
+                        ):
+                            return False
+                        if not chase_leds(list(LED_PINS), step_s=STARTUP_LED_SWEEP_STEP_S):
+                            return False
+                        return chase_leds(list(reversed(LED_PINS)), step_s=STARTUP_LED_SWEEP_STEP_S)
+
+                    if run_status_animation(startup_animation):
+                        store.add_event('LED_READY_ANIMATION')
                 except Exception:
                     pass
 
                 next_low_alert_monotonic = 0.0
+                next_full_alert_monotonic = 0.0
                 while not led_stop.is_set():
                     low_battery = False
+                    charge_complete = False
                     try:
                         pct = store.get_health_value('battery_percent')
-                        low_battery = pct is not None and float(pct) <= 10.0
+                        charging = bool(store.get_health_value('battery_charging'))
+                        current_ma = store.get_health_value('battery_current_ma')
+                        pct_value = float(pct) if pct is not None else None
+                        current_value = float(current_ma) if current_ma is not None else None
+                        low_battery = pct_value is not None and pct_value <= LOW_BATTERY_PERCENT
+                        charge_complete = (
+                            pct_value is not None
+                            and pct_value >= BATTERY_FULL_PERCENT
+                            and not charging
+                            and current_value is not None
+                            and current_value >= 0.0
+                        )
                     except Exception:
                         low_battery = False
+                        charge_complete = False
 
                     now = time.monotonic()
                     if low_battery:
                         if now >= next_low_alert_monotonic:
                             try:
-                                flash_led_triplet(LED_PINS[1], on_s=0.09, off_s=0.09)
-                                store.add_event('LED_BATTERY_LOW_FLASH')
+                                red_led = LED_PINS[max(0, min(len(LED_PINS) - 1, STATUS_LED_RED_INDEX - 1))]
+
+                                def low_battery_animation() -> bool:
+                                    return pulse_led(red_led, on_s=BATTERY_STATUS_PULSE_S)
+
+                                if run_status_animation(low_battery_animation):
+                                    store.add_event('LED_BATTERY_LOW_PULSE')
                             except Exception:
                                 pass
-                            next_low_alert_monotonic = now + 60.0
+                            next_low_alert_monotonic = now + BATTERY_STATUS_INTERVAL_S
+                        next_full_alert_monotonic = 0.0
+                    elif charge_complete:
+                        if now >= next_full_alert_monotonic:
+                            try:
+                                green_led = LED_PINS[max(0, min(len(LED_PINS) - 1, STATUS_LED_GREEN_INDEX - 1))]
+
+                                def full_battery_animation() -> bool:
+                                    return pulse_led(green_led, on_s=BATTERY_STATUS_PULSE_S)
+
+                                if run_status_animation(full_battery_animation):
+                                    store.add_event('LED_BATTERY_FULL_PULSE')
+                            except Exception:
+                                pass
+                            next_full_alert_monotonic = now + BATTERY_STATUS_INTERVAL_S
+                        next_low_alert_monotonic = 0.0
                     else:
                         next_low_alert_monotonic = 0.0
+                        next_full_alert_monotonic = 0.0
 
-                    for _ in range(10):
+                    for _ in range(4):
                         if led_stop.is_set():
                             break
                         time.sleep(0.5)
