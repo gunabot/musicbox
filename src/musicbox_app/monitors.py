@@ -3,7 +3,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import board
 import busio
@@ -426,7 +426,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 apply_led_pattern(set())
                 return not led_stop.is_set()
 
-            def run_status_animation(animation: callable) -> bool:
+            def run_status_animation(animation: Callable[[], bool]) -> bool:
                 begin_led_override()
                 try:
                     return bool(animation())
@@ -612,8 +612,8 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                     if run_status_animation(startup_animation):
                         store.add_event('LED_READY_ANIMATION')
-                except Exception:
-                    pass
+                except Exception as exc:
+                    store.add_event(f'LED_READY_ANIMATION_ERR {exc}', level='warning')
 
                 next_low_alert_monotonic = 0.0
                 next_full_alert_monotonic = 0.0
@@ -649,8 +649,8 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                                 if run_status_animation(low_battery_animation):
                                     store.add_event('LED_BATTERY_LOW_PULSE')
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                store.add_event(f'LED_BATTERY_LOW_ERR {exc}', level='warning')
                             next_low_alert_monotonic = now + BATTERY_STATUS_INTERVAL_S
                         next_full_alert_monotonic = 0.0
                     elif charge_complete:
@@ -663,8 +663,8 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                                 if run_status_animation(full_battery_animation):
                                     store.add_event('LED_BATTERY_FULL_PULSE')
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                store.add_event(f'LED_BATTERY_FULL_ERR {exc}', level='warning')
                             next_full_alert_monotonic = now + BATTERY_STATUS_INTERVAL_S
                         next_low_alert_monotonic = 0.0
                     else:
