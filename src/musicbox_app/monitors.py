@@ -69,6 +69,8 @@ _REG_CALIBRATION = 0x05
 _CALIBRATION_VALUE = 4096
 # Number of detent events we observe for one 360-degree encoder turn.
 _ROTARY_STEPS_PER_TURN = 24.0
+# On this seesaw breakout, LED pin 1 latches on after PWM use. Keep it digital.
+_PWM_DISABLED_LED_PINS = {1}
 
 
 def _detect_audio_device() -> Optional[str]:
@@ -271,6 +273,10 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     seesaw.pin_mode(pin, seesaw.INPUT_PULLUP)
                 for pin in LED_PINS:
                     seesaw.pin_mode(pin, seesaw.OUTPUT)
+                    if pin in _PWM_DISABLED_LED_PINS:
+                        seesaw.digital_write(pin, False)
+                        led_supports_pwm[pin] = False
+                        continue
                     try:
                         seesaw.set_pwm_freq(pin, LED_PWM_FREQ_HZ)
                         seesaw.analog_write(pin, 0, delay=0)
