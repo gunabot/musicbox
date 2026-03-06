@@ -8,9 +8,7 @@ use crate::types::{PcmBuffer, PlaybackState, State};
 
 pub fn build_output_stream(buffer: Arc<PcmBuffer>, playback: Arc<PlaybackState>) -> Result<Stream> {
     let host = cpal::default_host();
-    let device = host
-        .default_output_device()
-        .context("No default output device")?;
+    let device = select_output_device(&host)?;
 
     log::info!("Output device: {}", device.name().unwrap_or_default());
 
@@ -35,6 +33,70 @@ pub fn build_output_stream(buffer: Arc<PcmBuffer>, playback: Arc<PlaybackState>)
 
     stream.play().context("Failed to start output stream")?;
     Ok(stream)
+}
+
+fn select_output_device(host: &cpal::Host) -> Result<cpal::Device> {
+    let preferred = std::env::var("MUSICBOX_TWINPEAKS_OUTPUT_HINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    if let Some(hint) = preferred {
+        let devices = host
+            .output_devices()
+            .context("Failed to enumerate output devices")?;
+        let hint_lower = hint.to_ascii_lowercase();
+        let mut best_match: Option<(i32, cpal::Device)> = None;
+        let mut seen_names: Vec<String> = Vec::new();
+
+        for device in devices {
+            let name = device.name().unwrap_or_default();
+            seen_names.push(name.clone());
+            let score = device_match_score(&name, &hint_lower);
+            if score <= 0 {
+                continue;
+            }
+            match &best_match {
+                Some((best_score, _)) if *best_score >= score => {}
+                _ => best_match = Some((score, device)),
+            }
+        }
+
+        if let Some((_, device)) = best_match {
+            return Ok(device);
+        }
+
+        log::warn!(
+            "No output device matched hint '{}'. Available devices: {}",
+            hint,
+            seen_names.join(", ")
+        );
+    }
+
+    host.default_output_device()
+        .context("No default output device")
+}
+
+fn device_match_score(name: &str, hint_lower: &str) -> i32 {
+    let normalized = name.trim().to_ascii_lowercase();
+    if normalized.is_empty() || !normalized.contains(hint_lower) {
+        return 0;
+    }
+
+    let mut score = 10;
+    if normalized.starts_with("plughw:") {
+        score += 50;
+    } else if normalized.starts_with("sysdefault:") {
+        score += 40;
+    } else if normalized.starts_with("front:") {
+        score += 30;
+    } else if normalized.starts_with("hw:") {
+        score += 20;
+    }
+    if normalized.contains("pipewire") || normalized == "default" || normalized == "null" {
+        score -= 100;
+    }
+    score
 }
 
 /// The real-time audio callback. No allocations, no locks.
@@ -133,6 +195,8 @@ mod tests {
     use super::audio_callback;
     use crate::types::{PcmBuffer, PlaybackState, State};
 
+    use super::device_match_score;
+
     #[test]
     fn callback_outputs_silence_when_not_playing() {
         let buffer = PcmBuffer::new(16, 8_000, 1);
@@ -169,5 +233,15 @@ mod tests {
         assert!((out[2] - 0.0).abs() < 1e-6);
         assert!((out[3] - 0.0).abs() < 1e-6);
         assert_eq!(playback.state(), State::Stopped);
+    }
+
+    #[test]
+    fn device_match_score_prefers_real_alsa_outputs() {
+        assert!(
+            device_match_score("plughw:CARD=UACDemoV10,DEV=0", "uacdemov10")
+                > device_match_score("default", "uacdemov10")
+        );
+        assert_eq!(device_match_score("default", "uacdemov10"), 0);
+        assert_eq!(device_match_score("null", "uacdemov10"), 0);
     }
 }

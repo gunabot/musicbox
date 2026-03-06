@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -10,6 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .config import (
+    AUDIO_DEVICE,
     MEDIA_EXTENSIONS,
     PLAYER_TRANSPORT_RAMP_MS,
     PLAYER_TRANSPORT_RETURN_MS,
@@ -17,6 +19,7 @@ from .config import (
     TWINPEAKS_BINARY_CANDIDATES,
     TWINPEAKS_SOCKET,
     TWINPEAKS_STARTUP_TIMEOUT_S,
+    TWINPEAKS_OUTPUT_HINT,
 )
 from .media import list_audio_files_recursive, rel_from_abs, safe_rel_to_abs
 from .spotify_auth import SpotifyAuthManager
@@ -52,9 +55,16 @@ class PlaybackBackend(Protocol):
 
 
 class TwinPeaksBackend:
-    def __init__(self, *, socket_path: str = TWINPEAKS_SOCKET, binary_candidates: tuple[str, ...] = TWINPEAKS_BINARY_CANDIDATES) -> None:
+    def __init__(
+        self,
+        *,
+        socket_path: str = TWINPEAKS_SOCKET,
+        binary_candidates: tuple[str, ...] = TWINPEAKS_BINARY_CANDIDATES,
+        output_hint: str = TWINPEAKS_OUTPUT_HINT,
+    ) -> None:
         self.socket_path = socket_path
         self.binary_candidates = tuple(str(item).strip() for item in binary_candidates if str(item).strip())
+        self.output_hint = self._resolve_output_hint(output_hint)
         self._proc: subprocess.Popen[str] | None = None
 
     def _is_proc_alive(self) -> bool:
@@ -77,6 +87,42 @@ class TwinPeaksBackend:
                 return str(path)
         looked = ', '.join(self.binary_candidates) or '(none configured)'
         raise FileNotFoundError(f'twinpeaks binary not found. Looked in: {looked}')
+
+    def _resolve_output_hint(self, configured_hint: str) -> str:
+        hint = str(configured_hint or '').strip()
+        if hint:
+            return hint
+
+        normalized = str(AUDIO_DEVICE or '').strip()
+        if normalized.lower().startswith('alsa/'):
+            normalized = normalized.split('/', 1)[1].strip()
+        if not normalized:
+            return ''
+
+        match = re.match(r'(?i)(?:plug)?hw:(\d+),(\d+)$', normalized)
+        if not match:
+            return normalized
+
+        card_index = match.group(1)
+        try:
+            result = subprocess.run(
+                ['aplay', '-l'],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+        except Exception:
+            return normalized
+
+        card_pattern = re.compile(r'^card\s+(\d+):\s*([^\s\[]+)')
+        for line in result.stdout.splitlines():
+            found = card_pattern.search(line.strip())
+            if not found:
+                continue
+            if found.group(1) == card_index:
+                return found.group(2).strip()
+        return normalized
 
     def _command(self, payload: dict[str, Any]) -> dict[str, Any]:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -158,6 +204,8 @@ class TwinPeaksBackend:
         self._cleanup_socket()
         env = dict(os.environ)
         env.setdefault('RUST_LOG', 'info')
+        if self.output_hint:
+            env['MUSICBOX_TWINPEAKS_OUTPUT_HINT'] = self.output_hint
         self._proc = subprocess.Popen([binary, self.socket_path], env=env)
 
         try:

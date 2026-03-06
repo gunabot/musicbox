@@ -41,6 +41,7 @@ SETTINGS_PATH = CONFIG_DIR / 'settings.json'
 AUDIO_DEVICE = 'alsa/plughw:1,0'
 TWINPEAKS_SOCKET = os.environ.get('MUSICBOX_TWINPEAKS_SOCKET', '/tmp/twinpeaks.sock').strip() or '/tmp/twinpeaks.sock'
 TWINPEAKS_BINARY = os.environ.get('MUSICBOX_TWINPEAKS_BIN', '').strip()
+TWINPEAKS_OUTPUT_HINT = os.environ.get('MUSICBOX_TWINPEAKS_OUTPUT_HINT', '').strip()
 TWINPEAKS_BINARY_CANDIDATES = tuple(
     dict.fromkeys(
         str(path)
