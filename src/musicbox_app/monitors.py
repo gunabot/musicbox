@@ -274,6 +274,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     try:
                         seesaw.set_pwm_freq(pin, LED_PWM_FREQ_HZ)
                         seesaw.analog_write(pin, 0, delay=0)
+                        seesaw.digital_write(pin, False)
                         led_supports_pwm[pin] = True
                     except Exception:
                         seesaw.digital_write(pin, False)
@@ -348,10 +349,14 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
             def write_led_level_unlocked(pin: int, level: int) -> None:
                 clamped = clamp_led_level(level)
-                if led_supports_pwm.get(pin, False):
+                if clamped <= 0:
+                    if led_supports_pwm.get(pin, False):
+                        seesaw.analog_write(pin, 0, delay=0)
+                    seesaw.digital_write(pin, False)
+                elif led_supports_pwm.get(pin, False):
                     seesaw.analog_write(pin, clamped, delay=0)
                 else:
-                    seesaw.digital_write(pin, clamped > 0)
+                    seesaw.digital_write(pin, True)
 
             def set_led_level(pin: int, level: int) -> None:
                 with seesaw_lock:
