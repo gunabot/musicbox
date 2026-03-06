@@ -418,6 +418,8 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                     led_state['override_active'] = False
                     led_state['seq'] = int(led_state.get('seq', 0)) + 1
                     led_cond.notify_all()
+                apply_led_levels({})
+                wait_led_step(0.03)
                 apply_idle_leds(get_buttons_state(), force=True)
 
             def wait_led_step(duration_s: float) -> bool:
@@ -647,8 +649,8 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 except Exception as exc:
                     store.add_event(f'LED_READY_ANIMATION_ERR {exc}', level='warning')
 
-                next_low_alert_monotonic = 0.0
-                next_full_alert_monotonic = 0.0
+                next_low_alert_monotonic = time.monotonic() + BATTERY_STATUS_INTERVAL_S
+                next_full_alert_monotonic = time.monotonic() + BATTERY_STATUS_INTERVAL_S
                 while not led_stop.is_set():
                     low_battery = False
                     charge_complete = False
