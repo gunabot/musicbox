@@ -2,6 +2,8 @@ import os
 import sys
 import tempfile
 import unittest
+import wave
+from array import array
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,6 +63,15 @@ class RecorderManagerTests(unittest.TestCase):
         media_root.mkdir(parents=True, exist_ok=True)
         self.store = AppStore()
 
+    def _write_test_wav(self, path: Path, samples: list[int], *, sample_rate: int = 16000, channels: int = 1) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pcm = array('h', samples)
+        with wave.open(str(path), 'wb') as wav_file:
+            wav_file.setnchannels(channels)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(pcm.tobytes())
+
     def test_start_sets_recording_active_and_builds_arecord_command(self) -> None:
         fake_proc = FakeProc()
         recordings_dir = MEDIA_DIR / '_recordings'
@@ -89,8 +100,7 @@ class RecorderManagerTests(unittest.TestCase):
         ):
             recorder = RecorderManager(self.store, recordings_dir=recordings_dir, preview_name='preview.wav', device='plughw:0,0')
             self.assertTrue(recorder.start())
-            recordings_dir.mkdir(parents=True, exist_ok=True)
-            tmp_path.write_bytes(b'RIFF' + (b'\x00' * 128))
+            self._write_test_wav(tmp_path, [12000] * 512)
             relpath = recorder.stop()
 
         self.assertEqual(relpath, '_recordings/preview.wav')
@@ -98,6 +108,12 @@ class RecorderManagerTests(unittest.TestCase):
         snapshot = self.store.snapshot()
         self.assertFalse(snapshot['recording']['active'])
         self.assertEqual(snapshot['recording']['file'], '_recordings/preview.wav')
+        with wave.open(str(preview_path), 'rb') as wav_file:
+            softened = array('h')
+            softened.frombytes(wav_file.readframes(wav_file.getnframes()))
+        self.assertEqual(softened[0], 0)
+        self.assertEqual(softened[-1], 0)
+        self.assertGreater(softened[len(softened) // 2], 0)
 
     def test_resolve_device_uses_audio_device_card_index(self) -> None:
         with (
@@ -150,6 +166,16 @@ class RecorderManagerTests(unittest.TestCase):
                 recorder.start()
 
         self.assertFalse(self.store.snapshot()['recording']['active'])
+
+    def test_soften_edges_leaves_short_or_invalid_files_alone(self) -> None:
+        recorder = RecorderManager(self.store, edge_fade_ms=12.0)
+        path = MEDIA_DIR / '_recordings' / 'short.wav'
+        self._write_test_wav(path, [5000])
+        recorder._soften_edges(path)
+        with wave.open(str(path), 'rb') as wav_file:
+            softened = array('h')
+            softened.frombytes(wav_file.readframes(wav_file.getnframes()))
+        self.assertEqual(list(softened), [5000])
 
 
 if __name__ == '__main__':

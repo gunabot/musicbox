@@ -8,6 +8,8 @@ import signal
 import subprocess
 import threading
 import time
+import wave
+from array import array
 from pathlib import Path
 
 from .config import (
@@ -15,6 +17,7 @@ from .config import (
     RECORD_ARECORD_BIN,
     RECORD_CHANNELS,
     RECORD_DEVICE,
+    RECORD_EDGE_FADE_MS,
     RECORD_SAMPLE_FORMAT,
     RECORD_SAMPLE_RATE,
     RECORDING_PREVIEW_NAME,
@@ -38,6 +41,7 @@ class RecorderManager:
         sample_rate: int = RECORD_SAMPLE_RATE,
         channels: int = RECORD_CHANNELS,
         stop_timeout_s: float = RECORD_STOP_TIMEOUT_S,
+        edge_fade_ms: float = RECORD_EDGE_FADE_MS,
     ) -> None:
         self.store = store
         self.arecord_bin = str(arecord_bin).strip() or 'arecord'
@@ -48,6 +52,7 @@ class RecorderManager:
         self.sample_rate = max(8000, int(sample_rate))
         self.channels = max(1, min(2, int(channels)))
         self.stop_timeout_s = max(0.5, float(stop_timeout_s))
+        self.edge_fade_ms = max(0.0, float(edge_fade_ms))
         self._lock = threading.RLock()
         self._proc: subprocess.Popen[bytes] | None = None
         self._started_at_mono = 0.0
@@ -138,6 +143,7 @@ class RecorderManager:
                 self.store.add_event('RECORD_EMPTY', level='warning')
                 return None
 
+            self._soften_edges(self._tmp_path)
             os.replace(self._tmp_path, self._final_path)
             relpath = rel_from_abs(self._final_path)
             self._last_recording_relpath = relpath
@@ -235,3 +241,48 @@ class RecorderManager:
             str(self._tmp_path),
         ]
         return shlex.join(cmd)
+
+    def _soften_edges(self, path: Path) -> None:
+        fade_ms = self.edge_fade_ms
+        if fade_ms <= 0.0:
+            return
+        try:
+            with wave.open(str(path), 'rb') as wav_file:
+                params = wav_file.getparams()
+                if params.sampwidth != 2 or params.nframes <= 1:
+                    return
+                frame_rate = int(params.framerate)
+                channels = max(1, int(params.nchannels))
+                fade_frames = min(int((frame_rate * fade_ms) / 1000.0), params.nframes // 2)
+                if fade_frames <= 0:
+                    return
+                raw_frames = wav_file.readframes(params.nframes)
+
+            samples = array('h')
+            samples.frombytes(raw_frames)
+            if len(samples) != params.nframes * channels:
+                return
+
+            denom = max(1, fade_frames - 1)
+            for frame_index in range(fade_frames):
+                fade_in = frame_index / denom if denom else 0.0
+                fade_out = (fade_frames - 1 - frame_index) / denom if denom else 0.0
+                start_offset = frame_index * channels
+                end_offset = (params.nframes - fade_frames + frame_index) * channels
+                for channel in range(channels):
+                    start_sample = samples[start_offset + channel]
+                    end_sample = samples[end_offset + channel]
+                    samples[start_offset + channel] = int(round(start_sample * fade_in))
+                    samples[end_offset + channel] = int(round(end_sample * fade_out))
+
+            tmp_output = path.with_suffix(path.suffix + '.fade')
+            with wave.open(str(tmp_output), 'wb') as wav_file:
+                wav_file.setparams(params)
+                wav_file.writeframes(samples.tobytes())
+            os.replace(tmp_output, path)
+        except Exception:
+            try:
+                if 'tmp_output' in locals():
+                    tmp_output.unlink(missing_ok=True)
+            except Exception:
+                pass

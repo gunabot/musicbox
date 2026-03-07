@@ -47,6 +47,7 @@ RECORD_SAMPLE_FORMAT = os.environ.get('MUSICBOX_RECORD_SAMPLE_FORMAT', 'S16_LE')
 RECORD_SAMPLE_RATE = max(8000, int(os.environ.get('MUSICBOX_RECORD_SAMPLE_RATE', '16000')))
 RECORD_CHANNELS = max(1, min(2, int(os.environ.get('MUSICBOX_RECORD_CHANNELS', '1'))))
 RECORD_STOP_TIMEOUT_S = max(0.5, float(os.environ.get('MUSICBOX_RECORD_STOP_TIMEOUT_S', '3.0')))
+RECORD_EDGE_FADE_MS = max(0.0, float(os.environ.get('MUSICBOX_RECORD_EDGE_FADE_MS', '12.0')))
 TWINPEAKS_SOCKET = os.environ.get('MUSICBOX_TWINPEAKS_SOCKET', '/tmp/twinpeaks.sock').strip() or '/tmp/twinpeaks.sock'
 TWINPEAKS_BINARY = os.environ.get('MUSICBOX_TWINPEAKS_BIN', '').strip()
 TWINPEAKS_OUTPUT_HINT = os.environ.get('MUSICBOX_TWINPEAKS_OUTPUT_HINT', '').strip()
