@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config import EINK_BOOT_DELAY_S, EINK_ERROR_RETRY_S, EINK_MIN_REFRESH_S, EINK_POLL_INTERVAL_S
+from .config import EINK_BOOT_DELAY_S, EINK_ERROR_RETRY_S, EINK_POLL_INTERVAL_S
 from .media import safe_rel_to_abs
 
 ARTWORK_FILENAMES = ('cover', 'folder', 'front', 'artwork', 'album', 'thumb')
@@ -15,6 +15,11 @@ ARTWORK_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 ARTWORK_CACHE_LIMIT = 12
 ALBUM_ART_SIZE = (200, 200)
 FAST_BW_SCRUB_EVERY = 8
+DISPLAY_IDLE_SLEEP_S = 30.0
+DISPLAY_QUIET_WINDOW_S = 0.25
+DISPLAY_ARTWORK_SETTLE_S = 0.75
+DISPLAY_SCENE_CHANGE_SETTLE_S = 0.9
+DISPLAY_MAX_SETTLE_S = 1.5
 
 
 def _load_font(size: int, *, bold: bool = False):
@@ -58,6 +63,10 @@ def _artwork_key(path: Path | None) -> tuple[str, int, int] | None:
     except Exception:
         return None
     return (str(path), int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _paused_flag(status: str) -> bool:
+    return str(status or '').strip().lower() == 'paused'
 
 
 def resolve_album_art(relpath: str | None) -> Path | None:
@@ -150,6 +159,7 @@ class DisplayCoordinator:
         self._epd = None
         self._active_mode: str | None = None
         self._fast_bw_updates = 0
+        self._last_activity_mono = 0.0
 
     def build_plan(self, snapshot: dict[str, Any]) -> DisplayPlan:
         player = snapshot.get('player') or {}
@@ -168,7 +178,7 @@ class DisplayCoordinator:
             return DisplayPlan(
                 scene='album_art',
                 render_mode='quality_gray',
-                signature=('album_art', active_status, relpath, artwork_key),
+                signature=('album_art', relpath, artwork_key, _paused_flag(status)),
                 artwork_path=str(artwork_path),
             )
 
@@ -195,11 +205,13 @@ class DisplayCoordinator:
             self._draw_status(draw, canvas.size, snapshot, mono=(plan.render_mode == 'fast_bw'))
 
         self._render_canvas(epd, plan.render_mode, canvas)
+        self._last_activity_mono = time.monotonic()
 
     def reset_device(self) -> None:
         if self._epd is None:
             self._active_mode = None
             self._fast_bw_updates = 0
+            self._last_activity_mono = 0.0
             return
         try:
             self._epd.sleep()
@@ -211,6 +223,7 @@ class DisplayCoordinator:
             self._epd = None
             self._active_mode = None
             self._fast_bw_updates = 0
+            self._last_activity_mono = 0.0
 
     def _ensure_epd(self, render_mode: str):
         if self._epd is None:
@@ -232,6 +245,9 @@ class DisplayCoordinator:
 
         self._active_mode = render_mode
         return self._epd
+
+    def idle_sleep_due(self, now_mono: float) -> bool:
+        return bool(self._epd is not None and self._last_activity_mono > 0.0 and now_mono - self._last_activity_mono >= DISPLAY_IDLE_SLEEP_S)
 
     def _render_canvas(self, epd, render_mode: str, canvas) -> None:
         if render_mode == 'quality_gray':
@@ -323,50 +339,104 @@ class DisplayCoordinator:
         draw.line((text_x, height - 24, width - 18, height - 24), fill=0x80, width=2)
 
 
-def eink_worker(store) -> None:
-    if EINK_BOOT_DELAY_S > 0:
-        time.sleep(EINK_BOOT_DELAY_S)
+class DisplayService:
+    def __init__(self, store) -> None:
+        self.store = store
+        self.coordinator = DisplayCoordinator()
+        self.last_signature: tuple[Any, ...] | None = None
+        self.last_failed_signature: tuple[Any, ...] | None = None
+        self.last_failed_mono = 0.0
+        self.ready_logged = False
+        self.last_error: str | None = None
+        self.last_rendered_plan: DisplayPlan | None = None
 
-    coordinator: DisplayCoordinator | None = None
-    last_signature: tuple[Any, ...] | None = None
-    last_render_mono = 0.0
-    last_failed_signature: tuple[Any, ...] | None = None
-    last_failed_mono = 0.0
-    ready_logged = False
-    last_error: str | None = None
+    def run(self) -> None:
+        if EINK_BOOT_DELAY_S > 0:
+            time.sleep(EINK_BOOT_DELAY_S)
 
-    while True:
-        snapshot = store.snapshot(since_id=0, event_limit=1)
+        change_id = self.store.get_display_change_id()
 
-        try:
-            if coordinator is None:
-                coordinator = DisplayCoordinator()
-            plan = coordinator.build_plan(snapshot)
+        while True:
+            plan: DisplayPlan | None = None
+            try:
+                snapshot = self.store.display_snapshot()
+                snapshot, plan, change_id = self._coalesce_snapshot(snapshot, change_id)
+                now = time.monotonic()
+                if plan.signature == self.last_signature:
+                    self._idle_wait(change_id)
+                    change_id = self.store.get_display_change_id()
+                    continue
+                if plan.signature == self.last_failed_signature and now - self.last_failed_mono < EINK_ERROR_RETRY_S:
+                    self._idle_wait(change_id)
+                    change_id = self.store.get_display_change_id()
+                    continue
+
+                self.coordinator.render(plan, snapshot)
+                self.last_signature = plan.signature
+                self.last_rendered_plan = plan
+                self.last_failed_signature = None
+                self.last_failed_mono = 0.0
+                if not self.ready_logged:
+                    self.store.add_event('EINK_READY')
+                    self.ready_logged = True
+                self.last_error = None
+            except Exception as exc:
+                self.coordinator.reset_device()
+                self.last_failed_signature = plan.signature if plan is not None else None
+                self.last_failed_mono = time.monotonic()
+                message = str(exc).strip() or exc.__class__.__name__
+                if message != self.last_error:
+                    self.store.add_event(f'EINK_ERR {message}', level='warning')
+                    self.last_error = message
+
+            self._idle_wait(change_id)
+            change_id = self.store.get_display_change_id()
+
+    def _idle_wait(self, change_id: int) -> None:
+        self.store.wait_for_display_change(change_id, EINK_POLL_INTERVAL_S)
+        if self.coordinator.idle_sleep_due(time.monotonic()):
+            self.coordinator.reset_device()
+
+    def _coalesce_snapshot(self, snapshot: dict[str, Any], change_id: int) -> tuple[dict[str, Any], DisplayPlan, int]:
+        plan = self.coordinator.build_plan(snapshot)
+        quiet_deadline = time.monotonic() + self._settle_window(plan)
+        max_deadline = time.monotonic() + DISPLAY_MAX_SETTLE_S
+
+        while True:
             now = time.monotonic()
+            timeout = min(EINK_POLL_INTERVAL_S, max(0.0, quiet_deadline - now))
+            if timeout <= 0.0:
+                return snapshot, plan, change_id
 
-            if plan.signature == last_signature or now - last_render_mono < EINK_MIN_REFRESH_S:
-                time.sleep(EINK_POLL_INTERVAL_S)
-                continue
-            if plan.signature == last_failed_signature and now - last_failed_mono < EINK_ERROR_RETRY_S:
-                time.sleep(EINK_POLL_INTERVAL_S)
-                continue
+            next_change = self.store.wait_for_display_change(change_id, timeout)
+            if next_change == change_id:
+                return snapshot, plan, change_id
 
-            coordinator.render(plan, snapshot)
-            last_signature = plan.signature
-            last_render_mono = now
-            last_failed_signature = None
-            last_failed_mono = 0.0
-            if not ready_logged:
-                store.add_event('EINK_READY')
-                ready_logged = True
-            last_error = None
-        except Exception as exc:
-            if coordinator is not None:
-                coordinator.reset_device()
-            last_failed_signature = plan.signature if 'plan' in locals() else None
-            last_failed_mono = time.monotonic()
-            message = str(exc).strip() or exc.__class__.__name__
-            if message != last_error:
-                store.add_event(f'EINK_ERR {message}', level='warning')
-                last_error = message
-        time.sleep(EINK_POLL_INTERVAL_S)
+            change_id = next_change
+            snapshot = self.store.display_snapshot()
+            plan = self.coordinator.build_plan(snapshot)
+            now = time.monotonic()
+            if now >= max_deadline:
+                return snapshot, plan, change_id
+            quiet_deadline = min(max_deadline, now + self._settle_window(plan))
+
+    def _settle_window(self, plan: DisplayPlan) -> float:
+        if self.last_rendered_plan is None:
+            return DISPLAY_SCENE_CHANGE_SETTLE_S
+        if plan.scene != self.last_rendered_plan.scene:
+            return DISPLAY_SCENE_CHANGE_SETTLE_S
+        if plan.scene == 'album_art':
+            return DISPLAY_ARTWORK_SETTLE_S
+        if self._track_changed(plan, self.last_rendered_plan):
+            return DISPLAY_SCENE_CHANGE_SETTLE_S
+        return DISPLAY_QUIET_WINDOW_S
+
+    @staticmethod
+    def _track_changed(plan: DisplayPlan, previous: DisplayPlan) -> bool:
+        if plan.scene != previous.scene:
+            return True
+        if plan.scene == 'album_art':
+            return plan.signature[:3] != previous.signature[:3]
+        return plan.signature[:3] != previous.signature[:3]
+def eink_worker(store) -> None:
+    DisplayService(store).run()

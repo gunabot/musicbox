@@ -58,4 +58,4 @@
   - `status` -> fast full-frame `1-bit`
   - `album_art` -> full-screen `4-gray`
 - There is still no custom region/windowed partial renderer.
-- The runtime now has a `DisplayCoordinator` with scene selection and album-art lookup/cache.
+- The runtime now has an event-driven display service with a persistent panel session, scene selection, and album-art lookup/cache.

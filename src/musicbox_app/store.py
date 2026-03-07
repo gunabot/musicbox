@@ -20,6 +20,7 @@ from .persistence import MusicboxPersistence
 class AppStore:
     def __init__(self) -> None:
         self.lock = threading.RLock()
+        self._display_cond = threading.Condition(self.lock)
         self.persistence = MusicboxPersistence(
             db_path=DB_PATH,
             settings_path=SETTINGS_PATH,
@@ -30,6 +31,7 @@ class AppStore:
         self.persistence.migrate_legacy_json(archive=False)
         self._events: deque[Dict[str, Any]] = deque(maxlen=EVENTS_MAX)
         self._event_id = 0
+        self._display_change_id = 0
         self._mappings_cache: Dict[str, Dict[str, str]] | None = None
         self._settings = self._load_settings()
         self.state: Dict[str, Any] = {
@@ -107,6 +109,10 @@ class AppStore:
         with self.lock:
             return self._new_event(message, level)
 
+    def _mark_display_changed(self) -> None:
+        self._display_change_id += 1
+        self._display_cond.notify_all()
+
     def set_buttons(self, buttons: List[int]) -> None:
         with self.lock:
             self.state['buttons'] = list(buttons)
@@ -122,13 +128,19 @@ class AppStore:
 
     def set_last_card(self, card: str | None) -> None:
         with self.lock:
+            if self.state['last_card'] == card:
+                return
             self.state['last_card'] = card
+            self._mark_display_changed()
 
     def set_player_state(self, payload: Dict[str, Any]) -> None:
         with self.lock:
             current = dict(self.state.get('player', {}))
             current.update(payload)
+            if current == self.state.get('player'):
+                return
             self.state['player'] = current
+            self._mark_display_changed()
 
     def get_player_value(self, key: str, default: Any = None) -> Any:
         with self.lock:
@@ -139,7 +151,13 @@ class AppStore:
 
     def update_health(self, **kwargs: Any) -> None:
         with self.lock:
-            self.state['health'].update(kwargs)
+            changed = False
+            for key, value in kwargs.items():
+                if self.state['health'].get(key) != value:
+                    self.state['health'][key] = value
+                    changed = True
+            if changed:
+                self._mark_display_changed()
 
     def get_health_value(self, key: str, default: Any = None) -> Any:
         with self.lock:
@@ -177,3 +195,23 @@ class AppStore:
                 'events': events,
                 'last_event_id': self._event_id,
             }
+
+    def display_snapshot(self) -> Dict[str, Any]:
+        with self.lock:
+            return {
+                'last_card': self.state['last_card'],
+                'player': copy.deepcopy(self.state['player']),
+                'health': copy.deepcopy(self.state['health']),
+            }
+
+    def get_display_change_id(self) -> int:
+        with self.lock:
+            return int(self._display_change_id)
+
+    def wait_for_display_change(self, since_id: int, timeout: float | None = None) -> int:
+        timeout_s = None if timeout is None else max(0.0, float(timeout))
+        with self._display_cond:
+            if self._display_change_id > since_id:
+                return int(self._display_change_id)
+            self._display_cond.wait(timeout=timeout_s)
+            return int(self._display_change_id)

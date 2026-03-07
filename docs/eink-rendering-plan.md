@@ -12,7 +12,8 @@ Updated: 2026-03-07
   - black
 - Current runtime path:
   - local `waveshare_epd` driver
-  - service-owned `DisplayCoordinator`
+  - service-owned event-driven display service
+  - persistent panel session for repeated fast updates
   - scene-based layout selection (`status` / `album_art`)
   - `status` uses fast full-frame `1-bit` refresh
   - `album_art` uses full-screen `4-gray` refresh
@@ -24,7 +25,8 @@ Updated: 2026-03-07
 ## Current architecture
 
 - `DisplayCoordinator` is the only code touching the panel.
-- The worker polls store state, builds a `DisplayPlan`, and only redraws when the plan signature changes.
+- A `DisplayService` waits on display-relevant store changes instead of polling full snapshots.
+- The service coalesces bursts of changes before rendering so one song change does not automatically become several display refreshes.
 - Scene selection is currently:
   - `album_art` when an active track has adjacent art
   - `status` otherwise
@@ -38,6 +40,7 @@ Updated: 2026-03-07
 - Prepared art frames are cached in memory so redraws do not reprocess the same image repeatedly.
 - Failed renders are throttled so a bad image does not cause an endless refresh/error loop.
 - The fast path is still full-frame, not region/window partial update.
+- The panel sleeps after longer idle periods instead of being re-opened for every single fast update.
 
 ## What should exist next
 

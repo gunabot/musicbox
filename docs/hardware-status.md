@@ -23,7 +23,7 @@ Updated: 2026-03-07
   - WM8960 service enabled and active
 - Display:
   - Waveshare `3.7"` e-paper reachable through local `waveshare_epd` driver
-  - live display worker active in app
+  - live event-driven display service active in app
   - current scenes: `status`, `album_art`
   - current render split: `status -> fast_bw`, `album_art -> quality_gray`
 

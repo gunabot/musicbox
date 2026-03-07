@@ -100,6 +100,24 @@ class EInkTests(unittest.TestCase):
             plan_b = coordinator.build_plan({**base, 'player': {**base['player'], 'volume': 80}})
         self.assertEqual(plan_a.signature, plan_b.signature)
 
+    def test_album_art_signature_ignores_loading_to_playing_transition(self) -> None:
+        album = TEST_ROOT / 'media' / 'album'
+        album.mkdir(parents=True, exist_ok=True)
+        (album / 'song.mp3').write_text('x', encoding='utf-8')
+        (album / 'cover.jpg').write_text('x', encoding='utf-8')
+
+        coordinator = _eink_module().DisplayCoordinator()
+        base = {
+            'player': {'file': 'album/song.mp3', 'volume': 50, 'speed': 1.0, 'direction': 'forward'},
+            'health': {'battery_percent': 71.0, 'battery_charging': False},
+            'last_card': None,
+        }
+
+        with patch('musicbox_app.eink.safe_rel_to_abs', return_value=album / 'song.mp3'):
+            loading = coordinator.build_plan({**base, 'player': {**base['player'], 'status': 'loading'}})
+            playing = coordinator.build_plan({**base, 'player': {**base['player'], 'status': 'playing'}})
+        self.assertEqual(loading.signature, playing.signature)
+
     def test_render_canvas_uses_fast_bw_driver_path(self) -> None:
         coordinator = _eink_module().DisplayCoordinator()
         canvas = coordinator._Image.new('L', (480, 280), 0xFF)
@@ -176,6 +194,17 @@ class EInkTests(unittest.TestCase):
                 "display_1Gray:['mono']",
             ],
         )
+
+    def test_display_service_uses_longer_settle_for_scene_change(self) -> None:
+        eink = _eink_module()
+
+        class DummyStore:
+            pass
+
+        service = eink.DisplayService(DummyStore())
+        service.last_rendered_plan = eink.DisplayPlan(scene='status', render_mode='fast_bw', signature=('status', 'stopped', ''))
+        next_plan = eink.DisplayPlan(scene='album_art', render_mode='quality_gray', signature=('album_art', 'song'))
+        self.assertEqual(service._settle_window(next_plan), eink.DISPLAY_SCENE_CHANGE_SETTLE_S)
 
 
 if __name__ == '__main__':
