@@ -93,6 +93,10 @@ class RecorderManager:
             ]
             self._proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self._started_at_mono = time.monotonic()
+            time.sleep(0.05)
+            if not self._proc_alive_locked():
+                self._tmp_path.unlink(missing_ok=True)
+                raise RuntimeError(f'arecord exited early for {device}')
             self.store.set_recording_state(active=True)
             self.store.add_event(f'RECORD_START {device}')
             return True
@@ -159,6 +163,11 @@ class RecorderManager:
         if configured:
             return configured
 
+        cards = self._list_capture_cards()
+        for index, _name, line in cards:
+            if 'wm8960' in line.lower():
+                return f'plughw:{index},0'
+
         normalized = str(AUDIO_DEVICE or '').strip()
         if normalized.lower().startswith('alsa/'):
             normalized = normalized.split('/', 1)[1].strip()
@@ -166,18 +175,17 @@ class RecorderManager:
         match = re.match(r'(?i)(?:plug)?hw:([^,]+)(?:,(\d+))?$', normalized)
         if match:
             card = match.group(1)
-            return f'plughw:{card},0'
+            if any(index == card for index, _name, _line in cards):
+                return f'plughw:{card},0'
 
-        cards = self._list_capture_cards()
         if normalized:
             lower = normalized.lower()
             for index, name, line in cards:
                 if lower == name.lower() or lower in line.lower():
                     return f'plughw:{index},0'
 
-        for index, _name, line in cards:
-            if 'wm8960' in line.lower():
-                return f'plughw:{index},0'
+        if cards:
+            return f'plughw:{cards[0][0]},0'
 
         return 'plughw:0,0'
 

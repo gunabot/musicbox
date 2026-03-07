@@ -105,7 +105,21 @@ class RecorderManagerTests(unittest.TestCase):
             patch('musicbox_app.recorder.AUDIO_DEVICE', 'alsa/plughw:2,0'),
         ):
             recorder = RecorderManager(self.store, device='')
-            self.assertEqual(recorder._resolve_device(), 'plughw:2,0')
+            with patch.object(recorder, '_list_capture_cards', return_value=[('2', 'capturecard', 'card 2: capturecard')]):
+                self.assertEqual(recorder._resolve_device(), 'plughw:2,0')
+
+    def test_resolve_device_prefers_wm8960_capture_card(self) -> None:
+        with patch('musicbox_app.recorder.shutil.which', return_value='/usr/bin/arecord'):
+            recorder = RecorderManager(self.store, device='')
+            with patch.object(
+                recorder,
+                '_list_capture_cards',
+                return_value=[
+                    ('1', 'usb', 'card 1: USB Audio'),
+                    ('0', 'wm8960soundcard', 'card 0: wm8960soundcard [wm8960-soundcard]'),
+                ],
+            ):
+                self.assertEqual(recorder._resolve_device(), 'plughw:0,0')
 
     def test_is_recording_clears_state_after_process_exit(self) -> None:
         fake_proc = FakeProc()
@@ -119,6 +133,21 @@ class RecorderManagerTests(unittest.TestCase):
             self.assertTrue(recorder.start())
             fake_proc.returncode = 1
             self.assertFalse(recorder.is_recording())
+
+        self.assertFalse(self.store.snapshot()['recording']['active'])
+
+    def test_start_raises_if_arecord_exits_immediately(self) -> None:
+        fake_proc = FakeProc()
+        fake_proc.returncode = 1
+        recordings_dir = MEDIA_DIR / '_recordings'
+
+        with (
+            patch('musicbox_app.recorder.shutil.which', return_value='/usr/bin/arecord'),
+            patch('musicbox_app.recorder.subprocess.Popen', return_value=fake_proc),
+        ):
+            recorder = RecorderManager(self.store, recordings_dir=recordings_dir, device='plughw:0,0')
+            with self.assertRaisesRegex(RuntimeError, 'arecord exited early'):
+                recorder.start()
 
         self.assertFalse(self.store.snapshot()['recording']['active'])
 

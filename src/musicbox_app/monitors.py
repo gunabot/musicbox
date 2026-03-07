@@ -672,6 +672,7 @@ def _input_worker(store: AppStore, player: PlayerManager, recorder: RecorderMana
             accum = 0
             button_pressed_at: Dict[int, float] = {}
             transport_button_idx: int | None = None
+            record_attempted = False
 
             def maybe_begin_transport(idx: int, now_mono: float) -> None:
                 nonlocal transport_button_idx
@@ -694,22 +695,30 @@ def _input_worker(store: AppStore, player: PlayerManager, recorder: RecorderMana
                 return True
 
             def maybe_begin_record(now_mono: float) -> None:
+                nonlocal record_attempted
                 if recorder.is_recording():
+                    return
+                if record_attempted:
                     return
                 pressed_at = button_pressed_at.get(2)
                 if pressed_at is None or now_mono - pressed_at < RECORD_BUTTON_HOLD_SECONDS:
                     return
+                record_attempted = True
                 try:
                     if recorder.start():
                         set_recording_led(True)
                 except Exception as exc:
-                    button_pressed_at.pop(2, None)
                     store.add_event(f'RECORD_ERR {exc}', level='error')
 
             def release_record() -> bool:
+                nonlocal record_attempted
+                had_attempt = record_attempted
+                record_attempted = False
                 if not recorder.is_recording():
+                    if had_attempt:
+                        set_recording_led(False)
                     button_pressed_at.pop(2, None)
-                    return False
+                    return had_attempt
                 set_recording_led(False)
                 try:
                     relpath = recorder.stop()
@@ -826,6 +835,7 @@ def _input_worker(store: AppStore, player: PlayerManager, recorder: RecorderMana
                         if idx == 1:
                             player.play_pause()
                         elif idx == 2:
+                            record_attempted = False
                             button_pressed_at[idx] = now_mono
                             player.stop()
                             store.add_event('STOP')
