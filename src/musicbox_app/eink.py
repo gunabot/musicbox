@@ -14,6 +14,7 @@ ARTWORK_FILENAMES = ('cover', 'folder', 'front', 'artwork', 'album', 'thumb')
 ARTWORK_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 ARTWORK_CACHE_LIMIT = 12
 ALBUM_ART_SIZE = (200, 200)
+FAST_BW_SCRUB_EVERY = 8
 
 
 def _load_font(size: int, *, bold: bool = False):
@@ -146,6 +147,9 @@ class DisplayCoordinator:
         self._meta_font = _load_font(18)
         self._small_font = _load_font(16)
         self._art_cache = ArtworkCache()
+        self._epd = None
+        self._active_mode: str | None = None
+        self._fast_bw_updates = 0
 
     def build_plan(self, snapshot: dict[str, Any]) -> DisplayPlan:
         player = snapshot.get('player') or {}
@@ -182,35 +186,64 @@ class DisplayCoordinator:
         )
 
     def render(self, plan: DisplayPlan, snapshot: dict[str, Any]) -> None:
-        epd = self._epd3in7.EPD()
-        init_mode = 0 if plan.render_mode == 'quality_gray' else 1
-        if epd.init(init_mode) != 0:
+        epd = self._ensure_epd(plan.render_mode)
+        canvas = self._Image.new('L', (epd.height, epd.width), 0xFF)
+        draw = self._ImageDraw.Draw(canvas)
+        if plan.scene == 'album_art' and plan.artwork_path:
+            self._draw_album_art(canvas, draw, snapshot, Path(plan.artwork_path))
+        else:
+            self._draw_status(draw, canvas.size, snapshot, mono=(plan.render_mode == 'fast_bw'))
+
+        self._render_canvas(epd, plan.render_mode, canvas)
+
+    def reset_device(self) -> None:
+        if self._epd is None:
+            self._active_mode = None
+            self._fast_bw_updates = 0
+            return
+        try:
+            self._epd.sleep()
+        except Exception:
+            from waveshare_epd import epdconfig
+
+            epdconfig.module_exit()
+        finally:
+            self._epd = None
+            self._active_mode = None
+            self._fast_bw_updates = 0
+
+    def _ensure_epd(self, render_mode: str):
+        if self._epd is None:
+            self._epd = self._epd3in7.EPD()
+
+        if self._active_mode == render_mode:
+            return self._epd
+
+        init_mode = 0 if render_mode == 'quality_gray' else 1
+        if self._epd.init(init_mode) != 0:
+            self.reset_device()
             raise RuntimeError('e-ink init failed')
 
-        try:
-            canvas = self._Image.new('L', (epd.height, epd.width), 0xFF)
-            draw = self._ImageDraw.Draw(canvas)
-            if plan.scene == 'album_art' and plan.artwork_path:
-                self._draw_album_art(canvas, draw, snapshot, Path(plan.artwork_path))
-            else:
-                self._draw_status(draw, canvas.size, snapshot, mono=(plan.render_mode == 'fast_bw'))
+        if render_mode == 'fast_bw':
+            self._epd.Clear(0xFF, 1)
+            self._fast_bw_updates = 0
+        else:
+            self._fast_bw_updates = 0
 
-            self._render_canvas(epd, plan.render_mode, canvas)
-        finally:
-            try:
-                epd.sleep()
-            except Exception:
-                from waveshare_epd import epdconfig
-
-                epdconfig.module_exit()
+        self._active_mode = render_mode
+        return self._epd
 
     def _render_canvas(self, epd, render_mode: str, canvas) -> None:
         if render_mode == 'quality_gray':
             epd.Clear(0xFF, 0)
             epd.display_4Gray(epd.getbuffer_4Gray(canvas))
+            self._fast_bw_updates = 0
             return
         if render_mode == 'fast_bw':
+            if self._fast_bw_updates and self._fast_bw_updates % FAST_BW_SCRUB_EVERY == 0:
+                epd.Clear(0xFF, 1)
             epd.display_1Gray(epd.getbuffer(canvas))
+            self._fast_bw_updates += 1
             return
         raise ValueError(f'unsupported render mode: {render_mode}')
 
@@ -328,6 +361,8 @@ def eink_worker(store) -> None:
                 ready_logged = True
             last_error = None
         except Exception as exc:
+            if coordinator is not None:
+                coordinator.reset_device()
             last_failed_signature = plan.signature if 'plan' in locals() else None
             last_failed_mono = time.monotonic()
             message = str(exc).strip() or exc.__class__.__name__

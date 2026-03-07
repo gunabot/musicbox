@@ -119,6 +119,64 @@ class EInkTests(unittest.TestCase):
         coordinator._render_canvas(fake, 'fast_bw', canvas)
         self.assertEqual(fake.calls, ['getbuffer:L', "display_1Gray:['mono']"])
 
+    def test_fast_bw_reuses_initialized_panel(self) -> None:
+        coordinator = _eink_module().DisplayCoordinator()
+
+        class FakeEPD:
+            def __init__(self) -> None:
+                self.height = 280
+                self.width = 480
+                self.calls: list[str] = []
+
+            def init(self, mode):
+                self.calls.append(f'init:{mode}')
+                return 0
+
+            def Clear(self, color, mode):
+                self.calls.append(f'clear:{mode}')
+
+            def getbuffer(self, image):
+                self.calls.append(f'getbuffer:{image.mode}')
+                return ['mono']
+
+            def display_1Gray(self, image):
+                self.calls.append(f'display_1Gray:{image}')
+
+            def sleep(self):
+                self.calls.append('sleep')
+
+        class FakeModule:
+            def __init__(self) -> None:
+                self.instance = FakeEPD()
+
+            def EPD(self):
+                return self.instance
+
+        fake_module = FakeModule()
+        coordinator._epd3in7 = fake_module
+
+        plan = _eink_module().DisplayPlan(scene='status', render_mode='fast_bw', signature=('status',))
+        snapshot = {
+            'player': {'status': 'stopped', 'file': None},
+            'health': {'battery_percent': 60.0, 'battery_charging': False},
+            'last_card': None,
+        }
+
+        coordinator.render(plan, snapshot)
+        coordinator.render(plan, snapshot)
+
+        self.assertEqual(
+            fake_module.instance.calls,
+            [
+                'init:1',
+                'clear:1',
+                'getbuffer:L',
+                "display_1Gray:['mono']",
+                'getbuffer:L',
+                "display_1Gray:['mono']",
+            ],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()
