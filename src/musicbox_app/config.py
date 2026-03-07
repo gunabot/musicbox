@@ -89,6 +89,7 @@ EINK_ENABLED = os.environ.get('MUSICBOX_EINK_ENABLED', '1').strip().lower() not 
 EINK_BOOT_DELAY_S = max(0.0, float(os.environ.get('MUSICBOX_EINK_BOOT_DELAY_S', '2.0')))
 EINK_POLL_INTERVAL_S = max(0.5, float(os.environ.get('MUSICBOX_EINK_POLL_INTERVAL_S', '1.0')))
 EINK_MIN_REFRESH_S = max(2.0, float(os.environ.get('MUSICBOX_EINK_MIN_REFRESH_S', '4.0')))
+EINK_ERROR_RETRY_S = max(EINK_MIN_REFRESH_S, float(os.environ.get('MUSICBOX_EINK_ERROR_RETRY_S', '30.0')))
 PLAYER_BUTTON_HOLD_SECONDS = max(0.1, float(os.environ.get('MUSICBOX_PLAYER_BUTTON_HOLD_SECONDS', '0.4')))
 PLAYER_TRANSPORT_TARGET_SPEED = max(1.0, float(os.environ.get('MUSICBOX_PLAYER_TRANSPORT_TARGET_SPEED', '1.5')))
 PLAYER_TRANSPORT_RAMP_MS = max(0, int(os.environ.get('MUSICBOX_PLAYER_TRANSPORT_RAMP_MS', '2000')))

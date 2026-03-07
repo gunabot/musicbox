@@ -5,7 +5,7 @@
 - Web UI running (status + file manager + mappings + player controls)
 - `twinpeaks` is the primary playback backend
 - WM8960 playback path is working
-- E-ink smoke render and baseline live status screen are working
+- E-ink smoke render, live status, and album-art scene are working
 - Tailscale + SSH operational
 
 ## OverlayFS state
@@ -58,3 +58,4 @@
   - full-screen `4-gray`
   - full refresh
   - safe baseline, but visibly flashes
+- The runtime now has a `DisplayCoordinator` with scene selection and album-art lookup/cache.

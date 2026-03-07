@@ -23,7 +23,8 @@ Updated: 2026-03-07
   - WM8960 service enabled and active
 - Display:
   - Waveshare `3.7"` e-paper reachable through local `waveshare_epd` driver
-  - live status worker active in app
+  - live display worker active in app
+  - current scenes: `status`, `album_art`
 
 ## Verified smoke tests
 - `twinpeaks` playback through WM8960 works
@@ -31,7 +32,8 @@ Updated: 2026-03-07
 - arcade buttons + rotary work in app flow
 - e-paper smoke render works:
   - `/home/musicbox/musicbox-env/bin/python /home/musicbox/musicbox/scripts/test_eink.py`
-- live e-paper status render works from the service (`EINK_READY` seen in event log)
+- live e-paper rendering works from the service (`EINK_READY` seen in event log)
+- album art scene is working for tracks with adjacent folder art
 
 ## Input test script
 - Path: `~/musicbox/scripts/test_inputs.py`
