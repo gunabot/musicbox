@@ -170,7 +170,7 @@ class DisplayCoordinator:
 
         return DisplayPlan(
             scene='status',
-            render_mode='quality_gray',
+            render_mode='fast_bw',
             signature=(
                 'status',
                 active_status,
@@ -183,7 +183,8 @@ class DisplayCoordinator:
 
     def render(self, plan: DisplayPlan, snapshot: dict[str, Any]) -> None:
         epd = self._epd3in7.EPD()
-        if epd.init(0) != 0:
+        init_mode = 0 if plan.render_mode == 'quality_gray' else 1
+        if epd.init(init_mode) != 0:
             raise RuntimeError('e-ink init failed')
 
         try:
@@ -192,7 +193,7 @@ class DisplayCoordinator:
             if plan.scene == 'album_art' and plan.artwork_path:
                 self._draw_album_art(canvas, draw, snapshot, Path(plan.artwork_path))
             else:
-                self._draw_status(draw, canvas.size, snapshot)
+                self._draw_status(draw, canvas.size, snapshot, mono=(plan.render_mode == 'fast_bw'))
 
             self._render_canvas(epd, plan.render_mode, canvas)
         finally:
@@ -208,9 +209,12 @@ class DisplayCoordinator:
             epd.Clear(0xFF, 0)
             epd.display_4Gray(epd.getbuffer_4Gray(canvas))
             return
+        if render_mode == 'fast_bw':
+            epd.display_1Gray(epd.getbuffer(canvas))
+            return
         raise ValueError(f'unsupported render mode: {render_mode}')
 
-    def _draw_header(self, draw, *, width: int, status: str, battery: Any, charging: bool) -> None:
+    def _draw_header(self, draw, *, width: int, status: str, battery: Any, charging: bool, mono: bool = False) -> None:
         draw.rectangle((0, 0, width, 48), fill=0x00)
         draw.text((18, 10), status.upper(), font=self._meta_font, fill=0xFF)
         battery_text = '--%'
@@ -221,7 +225,7 @@ class DisplayCoordinator:
         battery_width = int(draw.textlength(battery_text, font=self._meta_font))
         draw.text((width - battery_width - 18, 10), battery_text, font=self._meta_font, fill=0xFF)
 
-    def _draw_status(self, draw, size: tuple[int, int], snapshot: dict[str, Any]) -> None:
+    def _draw_status(self, draw, size: tuple[int, int], snapshot: dict[str, Any], *, mono: bool = False) -> None:
         width, height = size
         player = snapshot.get('player') or {}
         health = snapshot.get('health') or {}
@@ -231,8 +235,10 @@ class DisplayCoordinator:
         charging = bool(health.get('battery_charging'))
         last_card = str(snapshot.get('last_card') or '').strip()
         title, subtitle = _player_title(player.get('file'))
+        secondary_fill = 0x00 if mono else 0x40
+        line_fill = 0x00 if mono else 0x80
 
-        self._draw_header(draw, width=width, status=status, battery=battery, charging=charging)
+        self._draw_header(draw, width=width, status=status, battery=battery, charging=charging, mono=mono)
 
         top = 72
         for line in textwrap.wrap(title, width=24)[:3]:
@@ -241,15 +247,15 @@ class DisplayCoordinator:
 
         if subtitle:
             for line in textwrap.wrap(subtitle, width=34)[:2]:
-                draw.text((18, top + 4), line, font=self._body_font, fill=0x40)
+                draw.text((18, top + 4), line, font=self._body_font, fill=secondary_fill)
                 top += 28
 
         if last_card:
-            draw.text((18, height - 52), f'Card {last_card}', font=self._small_font, fill=0x40)
+            draw.text((18, height - 52), f'Card {last_card}', font=self._small_font, fill=secondary_fill)
         else:
-            draw.text((18, height - 52), 'RFID ready', font=self._small_font, fill=0x40)
+            draw.text((18, height - 52), 'RFID ready', font=self._small_font, fill=secondary_fill)
 
-        draw.line((18, height - 24, width - 18, height - 24), fill=0x80, width=2)
+        draw.line((18, height - 24, width - 18, height - 24), fill=line_fill, width=2)
 
     def _draw_album_art(self, canvas, draw, snapshot: dict[str, Any], artwork_path: Path) -> None:
         width, height = canvas.size

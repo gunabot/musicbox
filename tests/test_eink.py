@@ -69,6 +69,19 @@ class EInkTests(unittest.TestCase):
         self.assertEqual(plan.render_mode, 'quality_gray')
         self.assertEqual(Path(plan.artwork_path), cover)
 
+    def test_build_plan_uses_fast_bw_for_status_scene(self) -> None:
+        coordinator = _eink_module().DisplayCoordinator()
+        plan = coordinator.build_plan(
+            {
+                'player': {'status': 'stopped', 'file': None, 'volume': 50, 'speed': 1.0, 'direction': 'forward'},
+                'health': {'battery_percent': 76.0, 'battery_charging': False},
+                'last_card': None,
+            }
+        )
+
+        self.assertEqual(plan.scene, 'status')
+        self.assertEqual(plan.render_mode, 'fast_bw')
+
     def test_album_art_signature_ignores_volume_changes(self) -> None:
         album = TEST_ROOT / 'media' / 'album'
         album.mkdir(parents=True, exist_ok=True)
@@ -86,6 +99,25 @@ class EInkTests(unittest.TestCase):
             plan_a = coordinator.build_plan({**base, 'player': {**base['player'], 'volume': 20}})
             plan_b = coordinator.build_plan({**base, 'player': {**base['player'], 'volume': 80}})
         self.assertEqual(plan_a.signature, plan_b.signature)
+
+    def test_render_canvas_uses_fast_bw_driver_path(self) -> None:
+        coordinator = _eink_module().DisplayCoordinator()
+        canvas = coordinator._Image.new('L', (480, 280), 0xFF)
+
+        class FakeEPD:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            def getbuffer(self, image):
+                self.calls.append(f'getbuffer:{image.mode}')
+                return ['mono']
+
+            def display_1Gray(self, image):
+                self.calls.append(f'display_1Gray:{image}')
+
+        fake = FakeEPD()
+        coordinator._render_canvas(fake, 'fast_bw', canvas)
+        self.assertEqual(fake.calls, ['getbuffer:L', "display_1Gray:['mono']"])
 
 
 if __name__ == '__main__':

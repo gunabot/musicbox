@@ -25,6 +25,7 @@ Updated: 2026-03-07
   - Waveshare `3.7"` e-paper reachable through local `waveshare_epd` driver
   - live display worker active in app
   - current scenes: `status`, `album_art`
+  - current render split: `status -> fast_bw`, `album_art -> quality_gray`
 
 ## Verified smoke tests
 - `twinpeaks` playback through WM8960 works

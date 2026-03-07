@@ -34,7 +34,7 @@
 - Added setup/runbook: `docs/spotify-cache-setup.md`
 
 ## Next roadmap items
-1. Reduce e-ink flashing with fast black/white status updates and selective full refresh
+1. Tune the e-ink fast/status path and decide when to force occasional full refreshes to scrub ghosting
 2. Validate WM8960 microphone/recording path and design `record / PTT` UX
 3. Tune `twinpeaks` transport feel further (ramp / return / higher-speed stages)
 4. Finalize enclosure layout for speakers, RFID, charge port, and display
@@ -54,8 +54,8 @@
 ## Hardware integration updates (2026-03-07)
 - `Pi -> UPS -> ribbon -> breakout -> WM8960 + wired peripherals` is the current working stack.
 - The 3.7" Waveshare panel is running through a minimal local driver, not the full vendor repo.
-- Current e-ink mode is conservative:
-  - full-screen `4-gray`
-  - full refresh
-  - safe baseline, but visibly flashes
+- Current e-ink split is:
+  - `status` -> fast full-frame `1-bit`
+  - `album_art` -> full-screen `4-gray`
+- There is still no custom region/windowed partial renderer.
 - The runtime now has a `DisplayCoordinator` with scene selection and album-art lookup/cache.

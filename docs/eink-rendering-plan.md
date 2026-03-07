@@ -14,10 +14,11 @@ Updated: 2026-03-07
   - local `waveshare_epd` driver
   - service-owned `DisplayCoordinator`
   - scene-based layout selection (`status` / `album_art`)
-  - full-screen `4-gray` refresh
+  - `status` uses fast full-frame `1-bit` refresh
+  - `album_art` uses full-screen `4-gray` refresh
 - Current tradeoff:
-  - image looks clean
-  - whole display flashes on each update
+  - status updates should flash less than gray renders
+  - album art still uses the slower full-screen gray refresh
   - text layout is still conservative and needs later tuning
 
 ## Current architecture
@@ -27,12 +28,16 @@ Updated: 2026-03-07
 - Scene selection is currently:
   - `album_art` when an active track has adjacent art
   - `status` otherwise
+- Render mode selection is currently:
+  - `status` -> `fast_bw`
+  - `album_art` -> `quality_gray`
 - Album art is resolved from the current track folder with this priority:
   - `<foldername>.jpg/png/...`
   - `cover`, `folder`, `front`, `artwork`, `album`, `thumb`
   - first other supported image in the folder
 - Prepared art frames are cached in memory so redraws do not reprocess the same image repeatedly.
 - Failed renders are throttled so a bad image does not cause an endless refresh/error loop.
+- The fast path is still full-frame, not region/window partial update.
 
 ## What should exist next
 
