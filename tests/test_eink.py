@@ -118,82 +118,48 @@ class EInkTests(unittest.TestCase):
             playing = coordinator.build_plan({**base, 'player': {**base['player'], 'status': 'playing'}})
         self.assertEqual(loading.signature, playing.signature)
 
-    def test_render_canvas_uses_fast_bw_driver_path(self) -> None:
+    def test_build_status_frame_uses_full_screen_overlay(self) -> None:
         coordinator = _eink_module().DisplayCoordinator()
-        canvas = coordinator._Image.new('L', (480, 280), 0xFF)
-
-        class FakeEPD:
-            def __init__(self) -> None:
-                self.calls: list[str] = []
-
-            def getbuffer(self, image):
-                self.calls.append(f'getbuffer:{image.mode}')
-                return ['mono']
-
-            def display_1Gray(self, image):
-                self.calls.append(f'display_1Gray:{image}')
-
-        fake = FakeEPD()
-        coordinator._render_canvas(fake, 'fast_bw', canvas)
-        self.assertEqual(fake.calls, ['getbuffer:L', "display_1Gray:['mono']"])
-
-    def test_fast_bw_reuses_initialized_panel(self) -> None:
-        coordinator = _eink_module().DisplayCoordinator()
-
-        class FakeEPD:
-            def __init__(self) -> None:
-                self.height = 280
-                self.width = 480
-                self.calls: list[str] = []
-
-            def init(self, mode):
-                self.calls.append(f'init:{mode}')
-                return 0
-
-            def Clear(self, color, mode):
-                self.calls.append(f'clear:{mode}')
-
-            def getbuffer(self, image):
-                self.calls.append(f'getbuffer:{image.mode}')
-                return ['mono']
-
-            def display_1Gray(self, image):
-                self.calls.append(f'display_1Gray:{image}')
-
-            def sleep(self):
-                self.calls.append('sleep')
-
-        class FakeModule:
-            def __init__(self) -> None:
-                self.instance = FakeEPD()
-
-            def EPD(self):
-                return self.instance
-
-        fake_module = FakeModule()
-        coordinator._epd3in7 = fake_module
-
-        plan = _eink_module().DisplayPlan(scene='status', render_mode='fast_bw', signature=('status',))
+        plan = _eink_module().DisplayPlan(scene='status', render_mode='fast_bw', signature=('status', 'stopped'))
         snapshot = {
             'player': {'status': 'stopped', 'file': None},
             'health': {'battery_percent': 60.0, 'battery_charging': False},
             'last_card': None,
         }
+        frame = coordinator._build_status_frame(plan, snapshot)
+        self.assertEqual(frame.render_mode, 'fast_bw')
+        self.assertEqual(len(frame.overlays), 1)
+        self.assertEqual(frame.overlays[0].name, 'status')
+        self.assertEqual((frame.overlays[0].rect.left, frame.overlays[0].rect.top), (0, 0))
 
-        coordinator.render(plan, snapshot)
-        coordinator.render(plan, snapshot)
+    def test_render_delegates_to_panel_core(self) -> None:
+        coordinator = _eink_module().DisplayCoordinator()
 
-        self.assertEqual(
-            fake_module.instance.calls,
-            [
-                'init:1',
-                'clear:1',
-                'getbuffer:L',
-                "display_1Gray:['mono']",
-                'getbuffer:L',
-                "display_1Gray:['mono']",
-            ],
-        )
+        class FakePanel:
+            def __init__(self) -> None:
+                self.frames = []
+
+            def render(self, frame):
+                self.frames.append(frame)
+
+            def reset_device(self):
+                pass
+
+            def idle_sleep_due(self, now_mono):
+                return False
+
+        fake_panel = FakePanel()
+        coordinator._panel = fake_panel
+
+        plan = _eink_module().DisplayPlan(scene='status', render_mode='fast_bw', signature=('status', 'stopped'))
+        snapshot = {
+            'player': {'status': 'stopped', 'file': None},
+            'health': {'battery_percent': 60.0, 'battery_charging': False},
+            'last_card': None,
+        }
+        coordinator.render(plan, snapshot)
+        self.assertEqual(len(fake_panel.frames), 1)
+        self.assertEqual(fake_panel.frames[0].render_mode, 'fast_bw')
 
     def test_display_service_uses_longer_settle_for_scene_change(self) -> None:
         eink = _eink_module()

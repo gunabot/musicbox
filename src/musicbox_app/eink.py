@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from musicbox_display import DisplayFrame, DisplayOverlay, PanelCore, Rect
+
 from .config import EINK_BOOT_DELAY_S, EINK_ERROR_RETRY_S, EINK_POLL_INTERVAL_S
 from .media import safe_rel_to_abs
 
@@ -14,8 +16,6 @@ ARTWORK_FILENAMES = ('cover', 'folder', 'front', 'artwork', 'album', 'thumb')
 ARTWORK_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
 ARTWORK_CACHE_LIMIT = 12
 ALBUM_ART_SIZE = (200, 200)
-FAST_BW_SCRUB_EVERY = 8
-DISPLAY_IDLE_SLEEP_S = 30.0
 DISPLAY_QUIET_WINDOW_S = 0.25
 DISPLAY_ARTWORK_SETTLE_S = 0.75
 DISPLAY_SCENE_CHANGE_SETTLE_S = 0.9
@@ -146,20 +146,15 @@ class ArtworkCache:
 class DisplayCoordinator:
     def __init__(self) -> None:
         from PIL import Image, ImageDraw
-        from waveshare_epd import epd3in7
 
         self._Image = Image
         self._ImageDraw = ImageDraw
-        self._epd3in7 = epd3in7
         self._title_font = _load_font(30, bold=True)
         self._body_font = _load_font(20)
         self._meta_font = _load_font(18)
         self._small_font = _load_font(16)
         self._art_cache = ArtworkCache()
-        self._epd = None
-        self._active_mode: str | None = None
-        self._fast_bw_updates = 0
-        self._last_activity_mono = 0.0
+        self._panel = PanelCore()
 
     def build_plan(self, snapshot: dict[str, Any]) -> DisplayPlan:
         player = snapshot.get('player') or {}
@@ -196,72 +191,69 @@ class DisplayCoordinator:
         )
 
     def render(self, plan: DisplayPlan, snapshot: dict[str, Any]) -> None:
-        epd = self._ensure_epd(plan.render_mode)
-        canvas = self._Image.new('L', (epd.height, epd.width), 0xFF)
-        draw = self._ImageDraw.Draw(canvas)
-        if plan.scene == 'album_art' and plan.artwork_path:
-            self._draw_album_art(canvas, draw, snapshot, Path(plan.artwork_path))
-        else:
-            self._draw_status(draw, canvas.size, snapshot, mono=(plan.render_mode == 'fast_bw'))
-
-        self._render_canvas(epd, plan.render_mode, canvas)
-        self._last_activity_mono = time.monotonic()
+        frame = self._build_frame(plan, snapshot)
+        self._panel.render(frame)
 
     def reset_device(self) -> None:
-        if self._epd is None:
-            self._active_mode = None
-            self._fast_bw_updates = 0
-            self._last_activity_mono = 0.0
-            return
-        try:
-            self._epd.sleep()
-        except Exception:
-            from waveshare_epd import epdconfig
-
-            epdconfig.module_exit()
-        finally:
-            self._epd = None
-            self._active_mode = None
-            self._fast_bw_updates = 0
-            self._last_activity_mono = 0.0
-
-    def _ensure_epd(self, render_mode: str):
-        if self._epd is None:
-            self._epd = self._epd3in7.EPD()
-
-        if self._active_mode == render_mode:
-            return self._epd
-
-        init_mode = 0 if render_mode == 'quality_gray' else 1
-        if self._epd.init(init_mode) != 0:
-            self.reset_device()
-            raise RuntimeError('e-ink init failed')
-
-        if render_mode == 'fast_bw':
-            self._epd.Clear(0xFF, 1)
-            self._fast_bw_updates = 0
-        else:
-            self._fast_bw_updates = 0
-
-        self._active_mode = render_mode
-        return self._epd
+        self._panel.reset_device()
 
     def idle_sleep_due(self, now_mono: float) -> bool:
-        return bool(self._epd is not None and self._last_activity_mono > 0.0 and now_mono - self._last_activity_mono >= DISPLAY_IDLE_SLEEP_S)
+        return self._panel.idle_sleep_due(now_mono)
 
-    def _render_canvas(self, epd, render_mode: str, canvas) -> None:
-        if render_mode == 'quality_gray':
-            epd.Clear(0xFF, 0)
-            epd.display_4Gray(epd.getbuffer_4Gray(canvas))
-            self._fast_bw_updates = 0
-            return
-        if render_mode == 'fast_bw':
-            if self._fast_bw_updates and self._fast_bw_updates % FAST_BW_SCRUB_EVERY == 0:
-                epd.Clear(0xFF, 1)
-            epd.display_1Gray(epd.getbuffer(canvas))
-            self._fast_bw_updates += 1
-            return
-        raise ValueError(f'unsupported render mode: {render_mode}')
+    def _build_frame(self, plan: DisplayPlan, snapshot: dict[str, Any]) -> DisplayFrame:
+        if plan.scene == 'album_art' and plan.artwork_path:
+            return self._build_album_art_frame(plan, snapshot, Path(plan.artwork_path))
+        return self._build_status_frame(plan, snapshot)
+
+    def _build_status_frame(self, plan: DisplayPlan, snapshot: dict[str, Any]) -> DisplayFrame:
+        size = (480, 280)
+        canvas = self._Image.new('L', size, 0xFF)
+        draw = self._ImageDraw.Draw(canvas)
+        self._draw_status(draw, size, snapshot, mono=True)
+
+        overlay = self._Image.new('1', size, 1)
+        overlay_draw = self._ImageDraw.Draw(overlay)
+        self._draw_status(overlay_draw, size, snapshot, mono=True)
+        return DisplayFrame(
+            render_mode=plan.render_mode,
+            full_canvas=canvas,
+            signature=plan.signature,
+            overlays=(DisplayOverlay('status', Rect(0, 0, size[0], size[1]), overlay),),
+        )
+
+    def _build_album_art_frame(self, plan: DisplayPlan, snapshot: dict[str, Any], artwork_path: Path) -> DisplayFrame:
+        size = (480, 280)
+        canvas = self._Image.new('L', size, 0xFF)
+        draw = self._ImageDraw.Draw(canvas)
+        self._draw_album_art(canvas, draw, snapshot, artwork_path)
+
+        width, height = size
+        header_overlay = self._Image.new('1', (width, 48), 1)
+        header_draw = self._ImageDraw.Draw(header_overlay)
+        self._draw_header(
+            header_draw,
+            width=width,
+            status=str((snapshot.get('player') or {}).get('status') or 'stopped').strip().lower(),
+            battery=(snapshot.get('health') or {}).get('battery_percent'),
+            charging=bool((snapshot.get('health') or {}).get('battery_charging')),
+            mono=True,
+        )
+
+        meta_rect = Rect(240, 68, width - 18, height - 34)
+        meta_overlay = self._Image.new('1', (meta_rect.width, meta_rect.height), 1)
+        meta_draw = self._ImageDraw.Draw(meta_overlay)
+        self._draw_album_meta(meta_draw, meta_overlay.size, snapshot)
+
+        return DisplayFrame(
+            render_mode=plan.render_mode,
+            full_canvas=canvas,
+            signature=plan.signature,
+            base_key=('album_art', plan.artwork_path),
+            overlays=(
+                DisplayOverlay('header', Rect(0, 0, width, 48), header_overlay),
+                DisplayOverlay('meta', meta_rect, meta_overlay),
+            ),
+        )
 
     def _draw_header(self, draw, *, width: int, status: str, battery: Any, charging: bool, mono: bool = False) -> None:
         draw.rectangle((0, 0, width, 48), fill=0x00)
@@ -337,6 +329,24 @@ class DisplayCoordinator:
 
         draw.text((text_x, height - 74), 'Album art', font=self._meta_font, fill=0x80)
         draw.line((text_x, height - 24, width - 18, height - 24), fill=0x80, width=2)
+
+    def _draw_album_meta(self, draw, size: tuple[int, int], snapshot: dict[str, Any]) -> None:
+        width, height = size
+        player = snapshot.get('player') or {}
+        title, subtitle = _player_title(player.get('file'))
+
+        top = 6
+        for line in textwrap.wrap(title, width=16)[:4]:
+            draw.text((0, top), line, font=self._title_font, fill=0x00)
+            top += 34
+
+        if subtitle:
+            top += 6
+            for line in textwrap.wrap(subtitle, width=19)[:3]:
+                draw.text((0, top), line, font=self._body_font, fill=0x00)
+                top += 26
+
+        draw.line((0, height - 6, width, height - 6), fill=0x00, width=2)
 
 
 class DisplayService:

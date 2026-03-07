@@ -11,36 +11,50 @@ Updated: 2026-03-07
   - dark gray
   - black
 - Current runtime path:
-  - local `waveshare_epd` driver
+  - local `waveshare_epd` driver with explicit full-mono and region-mono paths
+  - custom `musicbox_display` panel core
   - service-owned event-driven display service
-  - persistent panel session for repeated fast updates
+  - retained overlay planner for mono partial updates
   - scene-based layout selection (`status` / `album_art`)
-  - `status` uses fast full-frame `1-bit` refresh
-  - `album_art` uses full-screen `4-gray` refresh
+  - `status` can use mono partial updates
+  - `album_art` uses full-screen `4-gray` for new art, mono partial overlays for stable-art metadata changes
 - Current tradeoff:
-  - status updates should flash less than gray renders
-  - album art still uses the slower full-screen gray refresh
+  - grayscale art still requires a heavy full refresh when the base image changes
+  - mono overlays can now update without forcing that same refresh path
   - text layout is still conservative and needs later tuning
+
+See also:
+
+- [eink-panel-core-research-2026-03-07.md](/home/nuc/clawd/projects/musicbox/docs/eink-panel-core-research-2026-03-07.md)
 
 ## Current architecture
 
-- `DisplayCoordinator` is the only code touching the panel.
+- `DisplayCoordinator` builds scene frames.
+- `PanelCore` is the only code that talks to the panel driver.
 - A `DisplayService` waits on display-relevant store changes instead of polling full snapshots.
 - The service coalesces bursts of changes before rendering so one song change does not automatically become several display refreshes.
+- `PanelCore` owns:
+  - panel lifecycle
+  - retained overlay state
+  - full vs partial mono decision execution
+  - scrub/full-refresh fallback
+- `UpdatePlanner` compares overlay surfaces instead of diffing the whole screen as one image.
 - Scene selection is currently:
   - `album_art` when an active track has adjacent art
   - `status` otherwise
 - Render mode selection is currently:
   - `status` -> `fast_bw`
   - `album_art` -> `quality_gray`
+- Each scene can also expose mono overlay surfaces for low-flash follow-up updates.
 - Album art is resolved from the current track folder with this priority:
   - `<foldername>.jpg/png/...`
   - `cover`, `folder`, `front`, `artwork`, `album`, `thumb`
   - first other supported image in the folder
 - Prepared art frames are cached in memory so redraws do not reprocess the same image repeatedly.
 - Failed renders are throttled so a bad image does not cause an endless refresh/error loop.
-- The fast path is still full-frame, not region/window partial update.
 - The panel sleeps after longer idle periods instead of being re-opened for every single fast update.
+- The local lab script for controlled panel experiments is:
+  - `/home/nuc/clawd/projects/musicbox/scripts/eink_lab.py`
 
 ## What should exist next
 
@@ -98,8 +112,8 @@ The Pi can then just receive a final prepared image and display it.
 ## Near-term implementation plan
 
 1. Keep the current full-refresh `4-gray` path as the safe fallback for art and “final” screens.
-2. Add a fast black/white status renderer for routine UI changes.
-3. Keep the current coordinator/scene split and extend it rather than adding direct panel writes elsewhere.
+2. Keep the new partial-overlay planner narrow and reliable before adding more scene types.
+3. Extend scene overlays intentionally rather than letting ad-hoc panel writes spread through the app.
 4. Add one image conversion helper:
 - input: `png/jpg`
 - output: display-ready monochrome or `4-gray` image

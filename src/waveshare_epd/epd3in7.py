@@ -192,9 +192,35 @@ class EPD:
         self.send_data(0xCF)
         return 0
 
+    def init_4Gray(self) -> int:
+        return self.init(0)
+
+    def init_1Gray(self) -> int:
+        return self.init(1)
+
     def load_lut(self, lut: list[int]) -> None:
         self.send_command(0x32)
         self.send_data2(lut)
+
+    def set_window(self, x_start: int, y_start: int, x_end: int, y_end: int) -> None:
+        self.send_command(0x44)
+        self.send_data(x_start & 0xFF)
+        self.send_data((x_start >> 8) & 0x03)
+        self.send_data((x_end - 1) & 0xFF)
+        self.send_data(((x_end - 1) >> 8) & 0x03)
+
+        self.send_command(0x45)
+        self.send_data(y_start & 0xFF)
+        self.send_data((y_start >> 8) & 0x03)
+        self.send_data((y_end - 1) & 0xFF)
+        self.send_data(((y_end - 1) >> 8) & 0x03)
+
+    def set_cursor(self, x_start: int, y_start: int) -> None:
+        self.send_command(0x4E)
+        self.send_data(x_start & 0xFF)
+        self.send_command(0x4F)
+        self.send_data(y_start & 0xFF)
+        self.send_data((y_start >> 8) & 0xFF)
 
     def getbuffer(self, image) -> list[int]:
         buf = [0xFF] * (int(self.width / 8) * self.height)
@@ -359,22 +385,33 @@ class EPD:
         self.send_command(0x20)
         self.ReadBusy()
 
-    def display_1Gray(self, image: list[int] | None) -> None:
+    def display_1Gray_full(self, image: list[int] | None) -> None:
         if image is None:
             return
 
-        self.send_command(0x4E)
-        self.send_data(0x00)
-        self.send_data(0x00)
-        self.send_command(0x4F)
-        self.send_data(0x00)
-        self.send_data(0x00)
+        self.set_cursor(0x00, 0x00)
+        self.send_command(0x24)
+        self.send_data2(image)
+        self.load_lut(self.lut_1Gray_DU)
+        self.send_command(0x20)
+        self.ReadBusy()
 
+    def display_1Gray_part(self, image: list[int] | None, x_start: int, y_start: int, x_end: int, y_end: int) -> None:
+        if image is None:
+            return
+        if x_start % 8 != 0:
+            raise ValueError('x_start must be a multiple of 8')
+
+        self.set_window(x_start, y_start, x_end, y_end)
+        self.set_cursor(x_start, y_start)
         self.send_command(0x24)
         self.send_data2(image)
         self.load_lut(self.lut_1Gray_A2)
         self.send_command(0x20)
         self.ReadBusy()
+
+    def display_1Gray(self, image: list[int] | None) -> None:
+        self.display_1Gray_full(image)
 
     def Clear(self, color: int, mode: int) -> None:
         del color

@@ -24,8 +24,11 @@ Updated: 2026-03-07
 - Display:
   - Waveshare `3.7"` e-paper reachable through local `waveshare_epd` driver
   - live event-driven display service active in app
+  - custom `musicbox_display` panel core active
   - current scenes: `status`, `album_art`
-  - current render split: `status -> fast_bw`, `album_art -> quality_gray`
+  - current render split:
+    - `status -> fast_bw` with retained mono partial updates
+    - `album_art -> quality_gray` for base art, mono partial overlays for stable-art metadata updates
 
 ## Verified smoke tests
 - `twinpeaks` playback through WM8960 works
@@ -53,6 +56,9 @@ Updated: 2026-03-07
 
 ## Pending validation
 - WM8960 microphone capture path
-- non-flashy / partial-refresh e-paper update path
+- panel-core tuning on real hardware:
+  - mono partial cadence
+  - scrub cadence
+  - overlay region choices
 - 30-minute playback and idle soak tests
 - UPS low-battery behavior capture
