@@ -1,6 +1,6 @@
 # Project Primer — Build Checklist v1 (Cardboard Lunchbox)
 
-Last synced: 2026-02-28
+Last synced: 2026-03-07
 
 ## Mechanical
 - [ ] Mount Pi+UPS stack with standoffs (no direct PCB-to-cardboard contact)
@@ -16,25 +16,27 @@ Last synced: 2026-02-28
 - [ ] Verify charger powers + charges via UPS HAT
 
 ## Connectivity
-- [x] USB: RFID + speaker + mic connected
-- [ ] GPIO: e-ink wired (SPI pins)
+- [x] USB: RFID connected
+- [x] GPIO: e-ink wired (SPI pins)
 - [x] I2C button breakout wired
 - [x] Rotary wired
+- [x] WM8960 wired and detected
 
 ## OS/Software
 - [x] Enable SPI
 - [x] Enable I2C
 - [x] Reboot
 - [x] Test speaker output
-- [x] Test mic input
-- [ ] Test RFID read events (device present; live tag read still pending)
-- [ ] Test e-ink sample render
-- [ ] Test each button event + LED
+- [ ] Test mic input on WM8960 path
+- [x] Test RFID read events
+- [x] Test e-ink sample render
+- [x] Test each button event + LED
 
 ## UX
 - [ ] NFC beep mitigation decided (accept / tape / buzzer removal)
-- [ ] Button actions mapped (play/pause/stop/record/next/prev)
-- [ ] E-ink status screens set (idle/listening/speaking/playing)
+- [x] Button actions mapped for current player flow
+- [x] E-ink status screen baseline set
+- [ ] Record / PTT UX finalized
 
 ## Stability
 - [ ] 30-minute playback test
@@ -42,9 +44,9 @@ Last synced: 2026-02-28
 - [x] quick reboot/restart test
 - [ ] low-battery behavior observed and documented
 
-## Evidence (2026-02-28)
+## Evidence (2026-03-07)
 - `i2cdetect -y 1` shows `0x3A` (Adafruit seesaw) and `0x42` (UPS HAT).
 - `/dev/spidev0.0` and `/dev/spidev0.1` are present.
-- `aplay /usr/share/sounds/alsa/Front_Center.wav` completed successfully.
-- `arecord -d 2 -f S16_LE -r 16000 -c 1 /tmp/musicbox-mic-test.wav` completed successfully.
+- `wm8960soundcard` is detected and used by `twinpeaks`.
+- `musicbox/scripts/test_eink.py` rendered successfully on the 3.7" panel.
 - Multiple reboot cycles completed while switching overlay modes.

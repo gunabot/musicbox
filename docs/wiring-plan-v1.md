@@ -21,6 +21,7 @@ Current placement intent:
 - e-Paper is treated as a wired SPI peripheral, not as a stacked HAT
 - rotary stays on the same GPIOs as before
 - STEMMA uses the side clamps for `3V3`, `GND`, `SDA`, `SCL`
+- verified working on 2026-03-07 after correcting e-paper `RST` to Pi `pin 11`
 
 ## 3) USB Port Map (Pi 3B)
 
@@ -47,6 +48,7 @@ Notes:
 - The project uses the Waveshare display in its documented `8-wire` SPI mode.
 - Do not add the stock Waveshare `GPIO18 / PWR` control pin in this build.
 - `GPIO18` is already part of the WM8960 I2S audio bus, so the local driver intentionally avoids that path.
+- A real bring-up failure was caused by wiring `RST` to Pi `pin 9` (`GND`) instead of `pin 11`.
 
 ## 5) Button Breakout (Adafruit 5296, I2C)
 

@@ -1,6 +1,5 @@
-from __future__ import annotations
-
 import logging
+import time
 
 from . import epdconfig
 
@@ -12,6 +11,7 @@ GRAY1 = 0xFF
 GRAY2 = 0xC0
 GRAY3 = 0x80
 GRAY4 = 0x00
+BUSY_TIMEOUT_S = 15.0
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +71,12 @@ class EPD:
         epdconfig.spi_writebyte2(data)
         epdconfig.digital_write(self.cs_pin, 1)
 
-    def ReadBusy(self) -> None:
+    def ReadBusy(self, *, timeout_s: float = BUSY_TIMEOUT_S) -> None:
         logger.debug("e-paper busy")
+        deadline = time.monotonic() + max(0.1, float(timeout_s))
         while epdconfig.digital_read(self.busy_pin) == 1:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("e-paper busy wait timed out")
             epdconfig.delay_ms(10)
         logger.debug("e-paper busy release")
 
@@ -323,4 +326,3 @@ class EPD:
         self.send_data(0x03)
         epdconfig.delay_ms(2000)
         epdconfig.module_exit()
-

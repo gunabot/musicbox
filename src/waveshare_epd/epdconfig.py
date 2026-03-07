@@ -25,17 +25,33 @@ class RaspberryPiInterface:
         self._busy = None
 
     def _ensure_gpio(self) -> None:
-        if self._gpiozero is not None and self._spidev is not None:
+        if self._gpiozero is not None and self._spidev is not None and self._rst is not None and self._dc is not None and self._busy is not None:
             return
 
         import gpiozero
         import spidev
 
+        rst = None
+        dc = None
+        busy = None
+        try:
+            rst = gpiozero.LED(RST_PIN)
+            dc = gpiozero.LED(DC_PIN)
+            busy = gpiozero.Button(BUSY_PIN, pull_up=False)
+        except Exception:
+            for device in (rst, dc, busy):
+                if device is not None:
+                    try:
+                        device.close()
+                    except Exception:
+                        pass
+            raise
+
         self._gpiozero = gpiozero
         self._spidev = spidev
-        self._rst = gpiozero.LED(RST_PIN)
-        self._dc = gpiozero.LED(DC_PIN)
-        self._busy = gpiozero.Button(BUSY_PIN, pull_up=False)
+        self._rst = rst
+        self._dc = dc
+        self._busy = busy
 
     def digital_write(self, pin: int, value: int) -> None:
         self._ensure_gpio()
@@ -84,8 +100,15 @@ class RaspberryPiInterface:
             self._spi = None
         if self._rst is not None:
             self._rst.off()
+            self._rst.close()
+            self._rst = None
         if self._dc is not None:
             self._dc.off()
+            self._dc.close()
+            self._dc = None
+        if self._busy is not None:
+            self._busy.close()
+            self._busy = None
 
 
 _EPD = RaspberryPiInterface()

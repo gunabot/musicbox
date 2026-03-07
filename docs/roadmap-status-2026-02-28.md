@@ -1,9 +1,11 @@
-# Musicbox Roadmap Status (2026-02-28)
+# Musicbox Roadmap Status (2026-03-07)
 
 ## Current state
 - Hardware I/O prototype working (RFID, arcade buttons, rotary, LEDs)
 - Web UI running (status + file manager + mappings + player controls)
-- MPV playback working (file/folder mapping)
+- `twinpeaks` is the primary playback backend
+- WM8960 playback path is working
+- E-ink smoke render and baseline live status screen are working
 - Tailscale + SSH operational
 
 ## OverlayFS state
@@ -32,11 +34,11 @@
 - Added setup/runbook: `docs/spotify-cache-setup.md`
 
 ## Next roadmap items
-1. Validate first full playlist capture on-device and tune track timing gaps
-2. Optional: background prefetch queue (capture while first cached track plays)
-3. Add low-battery warning + graceful shutdown policy
-4. E-ink status integration
-5. Finalize power UX (ATXRaspi path)
+1. Reduce e-ink flashing with fast black/white status updates and selective full refresh
+2. Validate WM8960 microphone/recording path and design `record / PTT` UX
+3. Tune `twinpeaks` transport feel further (ramp / return / higher-speed stages)
+4. Finalize enclosure layout for speakers, RFID, charge port, and display
+5. Return the box to overlay/appliance mode after hardware churn settles
 
 ## Foundation updates (2026-03-01)
 - Persistence upgraded to SQLite (`config/musicbox.db`) with automatic legacy JSON migration.
@@ -48,3 +50,11 @@
 - Library/Card UX simplified:
   - no tree-only dependency for navigation
   - one-click `Map Last Scanned Card` flow from Library.
+
+## Hardware integration updates (2026-03-07)
+- `Pi -> UPS -> ribbon -> breakout -> WM8960 + wired peripherals` is the current working stack.
+- The 3.7" Waveshare panel is running through a minimal local driver, not the full vendor repo.
+- Current e-ink mode is conservative:
+  - full-screen `4-gray`
+  - full refresh
+  - safe baseline, but visibly flashes

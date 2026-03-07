@@ -1,6 +1,6 @@
 # Project Primer — Inventory & Specs (v1)
 
-Last updated: 2026-02-28
+Last updated: 2026-03-07
 
 ## Status Legend
 - owned = physically in hand
@@ -12,12 +12,15 @@ Last updated: 2026-02-28
 
 1) Raspberry Pi 3B
 - Status: owned
-- Notes: 4x USB ports available for NFC + speaker + mic
+- Notes:
+  - main controller
+  - current runtime uses `twinpeaks` + WM8960 audio HAT
+  - USB is now primarily used for RFID, not audio
 
 2) USB Speaker
 - URL: https://www.amazon.de/dp/B089W5PS29
 - Product: SoundBar Mini USB Speaker
-- Status: owned
+- Status: owned (legacy fallback)
 - Interface: USB
 
 3) RFID Cards (125kHz)
@@ -67,11 +70,14 @@ Last updated: 2026-02-28
 
 10) 3.7" Waveshare e-Paper HAT
 - URL: https://www.amazon.de/dp/B08HK8V3H8
-- Status: owned
+- Status: installed
 - Key specs:
   - 480x280
   - B/W + 4 gray levels
+  - 4 gray levels total
   - SPI interface
+  - remote-wired in documented 8-wire mode
+  - smoke test + live status rendering working
 
 11) Jumper wire kit
 - URL: https://www.amazon.de/dp/B0DGBYR2YL
@@ -83,7 +89,7 @@ Last updated: 2026-02-28
 
 12) USB Conference Mic
 - URL: https://www.amazon.de/dp/B0CP7ZSJK9
-- Status: installed
+- Status: owned (legacy fallback)
 - Key specs:
   - USB plug-and-play
   - omnidirectional
@@ -112,6 +118,29 @@ Last updated: 2026-02-28
 - Required: 2x identical cells
 - Required type: 18650 Li-ion, flat-top, matching pair
 
+17) Waveshare WM8960 Audio HAT
+- URL: https://www.waveshare.com/wiki/WM8960_Audio_HAT
+- Status: installed
+- Key specs:
+  - stereo playback + stereo capture
+  - I2S audio
+  - I2C control
+  - onboard microphones
+  - speaker output for passive stereo speakers
+
+18) Waveshare bundled stereo speakers
+- Status: installed
+- Key specs:
+  - passive stereo pair
+  - connected through the WM8960 speaker harness
+
+19) Adafruit LED Arcade Button 1x4 STEMMA QT breakout
+- URL: https://www.adafruit.com/product/5296
+- Status: installed
+- Notes:
+  - current 4-button illuminated control bank
+  - one second board is also in hand for later expansion
+
 ## Adafruit Parts Referenced (button system)
 
 - 4209: STEMMA QT / Qwiic JST SH 4-pin to male headers cable
@@ -137,5 +166,7 @@ Tutorial refs:
 
 - UPS HAT must be primary power path (charger into HAT, Pi powered via GPIO/HAT)
 - Current USB RFID reader is 125kHz EM4100 class (tap events; no robust tag-present sensing)
-- e-Paper + button/rotary wiring should use GPIO extension pins exposed by UPS HAT
+- Current working stack is `Pi -> UPS HAT -> ribbon -> breakout -> WM8960 + wired peripherals`
+- e-Paper uses the documented 8-wire SPI hookup (`VCC`, `GND`, `DIN`, `CLK`, `CS`, `DC`, `RST`, `BUSY`)
+- Do not use `GPIO18` as e-paper power in this build; it belongs to the WM8960 I2S bus
 - Keep mic physically separated from speaker (~10-15cm if possible)

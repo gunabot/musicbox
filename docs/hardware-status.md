@@ -1,11 +1,13 @@
 # Project Primer / Musicbox — Hardware Status
 
-Updated: 2026-02-28
+Updated: 2026-03-07
 
 ## Runtime state
 - Host: `musicbox` (`192.168.1.192`)
 - Mode: `maintenance` (overlay disabled, root on ext4 rw)
 - Service: `musicbox-status.service` is active
+- Primary player backend: `twinpeaks`
+- Primary audio output: `wm8960soundcard`
 
 ## Detected on Pi
 - I2C bus 1:
@@ -16,13 +18,20 @@ Updated: 2026-02-28
   - `/dev/spidev0.1`
 - USB/input:
   - Sycreader USB RFID reader (`...event-kbd`)
-  - Jieli USB audio device (playback + capture)
+- Audio:
+  - `card 0: wm8960soundcard`
+  - WM8960 service enabled and active
+- Display:
+  - Waveshare `3.7"` e-paper reachable through local `waveshare_epd` driver
+  - live status worker active in app
 
 ## Verified smoke tests
-- Audio playback command succeeds:
-  - `aplay /usr/share/sounds/alsa/Front_Center.wav`
-- Audio capture command succeeds:
-  - `arecord -d 2 -f S16_LE -r 16000 -c 1 /tmp/musicbox-mic-test.wav`
+- `twinpeaks` playback through WM8960 works
+- RFID card launch works in app flow
+- arcade buttons + rotary work in app flow
+- e-paper smoke render works:
+  - `/home/musicbox/musicbox-env/bin/python /home/musicbox/musicbox/scripts/test_eink.py`
+- live e-paper status render works from the service (`EINK_READY` seen in event log)
 
 ## Input test script
 - Path: `~/musicbox/scripts/test_inputs.py`
@@ -40,7 +49,7 @@ Updated: 2026-02-28
 - SW -> pin 33 (GPIO13)
 
 ## Pending validation
-- One live RFID tag read event in app flow
-- E-ink sample render on Waveshare panel
+- WM8960 microphone capture path
+- non-flashy / partial-refresh e-paper update path
 - 30-minute playback and idle soak tests
 - UPS low-battery behavior capture

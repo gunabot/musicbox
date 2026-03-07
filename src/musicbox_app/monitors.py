@@ -31,6 +31,8 @@ except Exception:  # pragma: no cover - optional runtime dependency
 
 from .config import (
     AUDIO_DEVICE,
+    EINK_ENABLED,
+    EINK_POLL_INTERVAL_S,
     BATTERY_FULL_PERCENT,
     BATTERY_STATUS_INTERVAL_S,
     BATTERY_STATUS_PULSE_S,
@@ -57,6 +59,7 @@ from .config import (
     TWINPEAKS_OUTPUT_HINT,
     UPS_ADDR,
 )
+from .eink import eink_worker
 from .player import PlayerManager
 from .store import AppStore
 
@@ -971,3 +974,5 @@ def start_background_monitors(store: AppStore, player: PlayerManager) -> None:
     threading.Thread(target=_rfid_worker, args=(store, player), daemon=True).start()
     threading.Thread(target=_player_watchdog_worker, args=(player,), daemon=True).start()
     threading.Thread(target=_health_worker, args=(store,), daemon=True).start()
+    if EINK_ENABLED:
+        threading.Thread(target=eink_worker, args=(store,), daemon=True).start()
