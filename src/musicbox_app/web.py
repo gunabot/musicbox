@@ -28,6 +28,7 @@ from .media import (
 )
 from .monitors import start_background_monitors
 from .player import PlayerManager
+from .recorder import RecorderManager
 from .spotify_auth import SpotifyAuthManager
 from .spotify_jobs import SpotifyCacheJobManager
 from .store import AppStore
@@ -40,11 +41,13 @@ class MusicboxRuntime:
         store: AppStore,
         spotify_auth: SpotifyAuthManager,
         player: PlayerManager,
+        recorder: RecorderManager,
         spotify_jobs: SpotifyCacheJobManager,
     ) -> None:
         self.store = store
         self.spotify_auth = spotify_auth
         self.player = player
+        self.recorder = recorder
         self.spotify_jobs = spotify_jobs
         self._lock = threading.RLock()
         self._started = False
@@ -54,7 +57,7 @@ class MusicboxRuntime:
             if self._started:
                 return
             self.spotify_jobs.start()
-            start_background_monitors(self.store, self.player)
+            start_background_monitors(self.store, self.player, self.recorder)
             self.store.add_event('musicbox service started')
             self._started = True
 
@@ -94,11 +97,13 @@ def create_app(*, start_runtime: bool = False) -> Flask:
     store = AppStore()
     spotify_auth = SpotifyAuthManager(store)
     player = PlayerManager(store, spotify_auth)
+    recorder = RecorderManager(store)
     spotify_jobs = SpotifyCacheJobManager(store, player.spotify_cache)
     runtime = MusicboxRuntime(
         store=store,
         spotify_auth=spotify_auth,
         player=player,
+        recorder=recorder,
         spotify_jobs=spotify_jobs,
     )
     app.extensions['musicbox_runtime'] = runtime

@@ -55,7 +55,7 @@ Updated: 2026-03-07
 - SW -> pin 33 (GPIO13)
 
 ## Pending validation
-- WM8960 microphone capture path
+- WM8960 microphone capture path through red-button recorder flow
 - panel-core tuning on real hardware:
   - mono partial cadence
   - scrub cadence

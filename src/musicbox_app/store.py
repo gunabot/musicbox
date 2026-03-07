@@ -16,6 +16,8 @@ from .config import (
 from .mappings import normalize_mappings_payload
 from .persistence import MusicboxPersistence
 
+_UNSET = object()
+
 
 class AppStore:
     def __init__(self) -> None:
@@ -40,6 +42,10 @@ class AppStore:
             'rotary_last': '-',
             'rotary_pos': 0,
             'last_card': None,
+            'recording': {
+                'active': False,
+                'file': None,
+            },
             'player': {
                 'status': 'stopped',
                 'source': 'local',
@@ -133,6 +139,23 @@ class AppStore:
             self.state['last_card'] = card
             self._mark_display_changed()
 
+    def set_recording_state(self, *, active: bool | None = None, file: str | None | object = _UNSET) -> None:
+        with self.lock:
+            current = dict(self.state.get('recording', {}))
+            changed = False
+            if active is not None:
+                active_value = bool(active)
+                if current.get('active') != active_value:
+                    current['active'] = active_value
+                    changed = True
+            if file is not _UNSET and current.get('file') != file:
+                current['file'] = file
+                changed = True
+            if not changed:
+                return
+            self.state['recording'] = current
+            self._mark_display_changed()
+
     def set_player_state(self, payload: Dict[str, Any]) -> None:
         with self.lock:
             current = dict(self.state.get('player', {}))
@@ -189,6 +212,7 @@ class AppStore:
                 'rotary_last': self.state['rotary_last'],
                 'rotary_pos': self.state['rotary_pos'],
                 'last_card': self.state['last_card'],
+                'recording': copy.deepcopy(self.state['recording']),
                 'player': copy.deepcopy(self.state['player']),
                 'settings': copy.deepcopy(self.state['settings']),
                 'health': copy.deepcopy(self.state['health']),
@@ -200,6 +224,7 @@ class AppStore:
         with self.lock:
             return {
                 'last_card': self.state['last_card'],
+                'recording': copy.deepcopy(self.state['recording']),
                 'player': copy.deepcopy(self.state['player']),
                 'health': copy.deepcopy(self.state['health']),
             }

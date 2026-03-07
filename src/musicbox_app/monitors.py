@@ -31,12 +31,12 @@ except Exception:  # pragma: no cover - optional runtime dependency
 
 from .config import (
     AUDIO_DEVICE,
-    EINK_ENABLED,
-    EINK_POLL_INTERVAL_S,
     BATTERY_FULL_PERCENT,
     BATTERY_STATUS_INTERVAL_S,
     BATTERY_STATUS_PULSE_S,
     BUTTON_PINS,
+    EINK_ENABLED,
+    EINK_POLL_INTERVAL_S,
     HEALTH_AUDIO_SCAN_INTERVAL_S,
     HEALTH_METRICS_INTERVAL_S,
     INPUT_LOOP_INTERVAL_S,
@@ -44,6 +44,8 @@ from .config import (
     LOW_BATTERY_PERCENT,
     MEDIA_DIR,
     PLAYER_BUTTON_HOLD_SECONDS,
+    RECORD_BUTTON_HOLD_SECONDS,
+    RECORD_LED_BLINK_S,
     RFID_NAME_HINTS,
     ROT_CLK,
     ROT_DT,
@@ -61,6 +63,7 @@ from .config import (
 )
 from .eink import eink_worker
 from .player import PlayerManager
+from .recorder import RecorderManager
 from .store import AppStore
 
 _REG_SHUNTVOLTAGE = 0x01
@@ -314,7 +317,7 @@ def _rotary_volume_delta(store: AppStore) -> float:
     return max(0.5, min(20.0, float(per_turn) / _ROTARY_STEPS_PER_TURN))
 
 
-def _input_worker(store: AppStore, player: PlayerManager) -> None:
+def _input_worker(store: AppStore, player: PlayerManager, recorder: RecorderManager) -> None:
     trans = {
         (0, 1): +1,
         (1, 3): +1,
@@ -400,6 +403,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 'boundary': None,
                 'boundary_until': 0.0,
                 'override_active': False,
+                'recording_active': False,
             }
             buttons_state_lock = threading.Lock()
             buttons_state = [0 for _ in LED_PINS]
@@ -500,11 +504,26 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 return not led_stop.is_set()
 
             def run_status_animation(animation: Callable[[], bool]) -> bool:
+                with led_cond:
+                    if bool(led_state.get('recording_active')):
+                        return False
                 begin_led_override()
                 try:
                     return bool(animation())
                 finally:
                     end_led_override()
+
+            def set_recording_led(active: bool) -> None:
+                with led_cond:
+                    if bool(led_state.get('recording_active')) == bool(active):
+                        return
+                    led_state['recording_active'] = bool(active)
+                    led_state['seq'] = int(led_state.get('seq', 0)) + 1
+                    led_cond.notify_all()
+                if not active:
+                    apply_led_levels({})
+                    wait_led_step(0.03)
+                    apply_idle_leds(get_buttons_state(), force=True)
 
             def rotary_led_sweep(direction: str, button_state: list[int], state_seq: int) -> None:
                 step_ms = store.get_setting('rotary_led_step_ms', 25)
@@ -606,11 +625,18 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 queue_led_sweep(direction, button_state)
 
             def led_worker() -> None:
+                record_led = LED_PINS[max(0, min(len(LED_PINS) - 1, STATUS_LED_RED_INDEX - 1))]
                 while not led_stop.is_set():
                     direction = ''
                     button_state = [0 for _ in LED_PINS]
                     state_seq = 0
                     with led_cond:
+                        if bool(led_state.get('recording_active')):
+                            blink_s = max(0.08, float(RECORD_LED_BLINK_S))
+                            phase_on = int(time.monotonic() / blink_s) % 2 == 0
+                            apply_led_pattern({record_led} if phase_on else set())
+                            led_cond.wait(timeout=min(0.05, blink_s / 2.0))
+                            continue
                         if bool(led_state.get('override_active')):
                             led_cond.wait(timeout=0.05)
                             continue
@@ -665,6 +691,40 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                 player.end_transport()
                 transport_button_idx = None
                 button_pressed_at.pop(idx, None)
+                return True
+
+            def maybe_begin_record(now_mono: float) -> None:
+                if recorder.is_recording():
+                    return
+                pressed_at = button_pressed_at.get(2)
+                if pressed_at is None or now_mono - pressed_at < RECORD_BUTTON_HOLD_SECONDS:
+                    return
+                try:
+                    if recorder.start():
+                        set_recording_led(True)
+                except Exception as exc:
+                    button_pressed_at.pop(2, None)
+                    store.add_event(f'RECORD_ERR {exc}', level='error')
+
+            def release_record() -> bool:
+                if not recorder.is_recording():
+                    button_pressed_at.pop(2, None)
+                    return False
+                set_recording_led(False)
+                try:
+                    relpath = recorder.stop()
+                except Exception as exc:
+                    store.add_event(f'RECORD_ERR {exc}', level='error')
+                    button_pressed_at.pop(2, None)
+                    return True
+                button_pressed_at.pop(2, None)
+                if not relpath:
+                    return True
+                try:
+                    player.play(relpath)
+                    store.add_event(f'RECORD_PREVIEW {relpath}')
+                except Exception as exc:
+                    store.add_event(f'RECORD_PREVIEW_ERR {relpath}: {exc}', level='error')
                 return True
 
             def status_led_worker() -> None:
@@ -766,10 +826,13 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
                         if idx == 1:
                             player.play_pause()
                         elif idx == 2:
+                            button_pressed_at[idx] = now_mono
                             player.stop()
                             store.add_event('STOP')
                         elif idx in {3, 4}:
                             button_pressed_at[idx] = now_mono
+                    elif idx == 2:
+                        release_record()
                     elif idx in {3, 4}:
                         was_transport = release_transport(idx)
                         if not was_transport:
@@ -780,6 +843,7 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
                 last_buttons = buttons
                 set_buttons_state(last_buttons)
+                maybe_begin_record(now_mono)
                 maybe_begin_transport(3, now_mono)
                 maybe_begin_transport(4, now_mono)
 
@@ -846,6 +910,14 @@ def _input_worker(store: AppStore, player: PlayerManager) -> None:
 
         except Exception as exc:
             led_stop.set()
+            try:
+                set_recording_led(False)
+            except Exception:
+                pass
+            try:
+                recorder.cancel()
+            except Exception:
+                pass
             store.update_health(seesaw=False)
             store.add_event(f'INPUT_ERR {exc}', level='error')
             try:
@@ -969,8 +1041,8 @@ def _health_worker(store: AppStore) -> None:
         time.sleep(HEALTH_METRICS_INTERVAL_S)
 
 
-def start_background_monitors(store: AppStore, player: PlayerManager) -> None:
-    threading.Thread(target=_input_worker, args=(store, player), daemon=True).start()
+def start_background_monitors(store: AppStore, player: PlayerManager, recorder: RecorderManager) -> None:
+    threading.Thread(target=_input_worker, args=(store, player, recorder), daemon=True).start()
     threading.Thread(target=_rfid_worker, args=(store, player), daemon=True).start()
     threading.Thread(target=_player_watchdog_worker, args=(player,), daemon=True).start()
     threading.Thread(target=_health_worker, args=(store,), daemon=True).start()

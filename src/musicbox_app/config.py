@@ -39,6 +39,14 @@ MAPPINGS_PATH = CONFIG_DIR / 'card_mappings.json'
 SETTINGS_PATH = CONFIG_DIR / 'settings.json'
 
 AUDIO_DEVICE = os.environ.get('MUSICBOX_AUDIO_DEVICE', 'alsa/plughw:1,0').strip() or 'alsa/plughw:1,0'
+RECORD_ARECORD_BIN = os.environ.get('MUSICBOX_RECORD_ARECORD_BIN', 'arecord').strip() or 'arecord'
+RECORD_DEVICE = os.environ.get('MUSICBOX_RECORD_DEVICE', '').strip()
+RECORDINGS_DIR = Path(os.environ.get('MUSICBOX_RECORDINGS_DIR', str(MEDIA_DIR / '_recordings'))).resolve()
+RECORDING_PREVIEW_NAME = os.environ.get('MUSICBOX_RECORDING_PREVIEW_NAME', 'red-button.wav').strip() or 'red-button.wav'
+RECORD_SAMPLE_FORMAT = os.environ.get('MUSICBOX_RECORD_SAMPLE_FORMAT', 'S16_LE').strip() or 'S16_LE'
+RECORD_SAMPLE_RATE = max(8000, int(os.environ.get('MUSICBOX_RECORD_SAMPLE_RATE', '16000')))
+RECORD_CHANNELS = max(1, min(2, int(os.environ.get('MUSICBOX_RECORD_CHANNELS', '1'))))
+RECORD_STOP_TIMEOUT_S = max(0.5, float(os.environ.get('MUSICBOX_RECORD_STOP_TIMEOUT_S', '3.0')))
 TWINPEAKS_SOCKET = os.environ.get('MUSICBOX_TWINPEAKS_SOCKET', '/tmp/twinpeaks.sock').strip() or '/tmp/twinpeaks.sock'
 TWINPEAKS_BINARY = os.environ.get('MUSICBOX_TWINPEAKS_BIN', '').strip()
 TWINPEAKS_OUTPUT_HINT = os.environ.get('MUSICBOX_TWINPEAKS_OUTPUT_HINT', '').strip()
@@ -91,6 +99,11 @@ EINK_POLL_INTERVAL_S = max(0.5, float(os.environ.get('MUSICBOX_EINK_POLL_INTERVA
 EINK_MIN_REFRESH_S = max(2.0, float(os.environ.get('MUSICBOX_EINK_MIN_REFRESH_S', '4.0')))
 EINK_ERROR_RETRY_S = max(EINK_MIN_REFRESH_S, float(os.environ.get('MUSICBOX_EINK_ERROR_RETRY_S', '30.0')))
 PLAYER_BUTTON_HOLD_SECONDS = max(0.1, float(os.environ.get('MUSICBOX_PLAYER_BUTTON_HOLD_SECONDS', '0.4')))
+RECORD_BUTTON_HOLD_SECONDS = max(
+    0.1,
+    float(os.environ.get('MUSICBOX_RECORD_BUTTON_HOLD_SECONDS', str(PLAYER_BUTTON_HOLD_SECONDS))),
+)
+RECORD_LED_BLINK_S = max(0.08, float(os.environ.get('MUSICBOX_RECORD_LED_BLINK_S', '0.24')))
 PLAYER_TRANSPORT_TARGET_SPEED = max(1.0, float(os.environ.get('MUSICBOX_PLAYER_TRANSPORT_TARGET_SPEED', '1.5')))
 PLAYER_TRANSPORT_RAMP_MS = max(0, int(os.environ.get('MUSICBOX_PLAYER_TRANSPORT_RAMP_MS', '2000')))
 PLAYER_TRANSPORT_RETURN_MS = max(0, int(os.environ.get('MUSICBOX_PLAYER_TRANSPORT_RETURN_MS', '700')))

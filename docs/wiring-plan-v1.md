@@ -95,9 +95,9 @@ Current physical arrangement:
 
 ## 7) Suggested Control Mapping
 
-- Yellow: record/talk (hold)
-- Green: play/resume
-- Red: pause (short), stop/shutdown (long)
+- Yellow: future dedicated record/talk button
+- Green: play/pause
+- Red: stop on press, hold-to-record, release-to-preview
 - Blue 1: previous/rewind
 - Blue 2: next/forward
 - NFC tap: toggle/launch card action + e-ink update

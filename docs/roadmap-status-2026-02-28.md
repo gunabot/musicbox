@@ -5,6 +5,7 @@
 - Web UI running (status + file manager + mappings + player controls)
 - `twinpeaks` is the primary playback backend
 - WM8960 playback path is working
+- Red-button hold-to-record flow is implemented in software against a dedicated WAV preview slot
 - E-ink smoke render, live status, album-art scene, and custom panel-core path are working
 - Tailscale + SSH operational
 
@@ -38,7 +39,7 @@
   - overlay region choices
   - scrub cadence
   - mode-switch behavior between grayscale and mono partial updates
-2. Validate WM8960 microphone/recording path and design `record / PTT` UX
+2. Validate WM8960 microphone/recording path and tune `record / PTT` UX
 3. Tune `twinpeaks` transport feel further (ramp / return / higher-speed stages)
 4. Finalize enclosure layout for speakers, RFID, charge port, and display
 5. Return the box to overlay/appliance mode after hardware churn settles
